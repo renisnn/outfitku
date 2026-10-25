@@ -1,0 +1,16 @@
+OUTFITKU — PAKET LENGKAP
+
+Isi:
+  index.html          halaman web terbaru (semua perbaikan sampai 25 Okt 2026)
+  config.js           pengaturan (link Sheets masih KOSONG — jangan timpa config.js kamu yang sudah berisi link)
+  *.png               semua foto produk (P001–P016 + 46 celana H&M, termasuk varian warna)
+  katalog-lengkap.csv seluruh katalog P001–P062 dengan judul kolom
+
+Cara pakai (repo GitHub outfitku):
+  1. Upload index.html dan semua file .png ke halaman utama repo (timpa kalau ditanya).
+  2. config.js: lewati kalau di repo sudah ada yang berisi link Sheets.
+  3. Google Sheets: hapus semua isi tab katalog, lalu File > Impor > katalog-lengkap.csv
+     (pilih "Ganti sheet saat ini"). Sheets yang sudah dipublikasikan tetap pakai link yang sama.
+  4. Tunggu ±2–5 menit, web di Vercel akan ikut terbarui.
+
+Catatan: ukuran celana H&M (P017–P062) masih perkiraan standar H&M.
