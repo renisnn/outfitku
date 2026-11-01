@@ -2570,13 +2570,26 @@ function garmentTargets(p, g, size, L) {
       const gHalfAp = A.armpitR ? (A.armpitR[0] - A.armpitL[0]) / 2 : gsw / 2;
       const N = 9;
       let prevBody = -1, prevHalf = 0;
+      // kalau ketiak baju ditarik turun ke ketiak tubuh, sisi baju di bawahnya ikut turun (tidak terlipat ke atas)
+      const apG = A["armpit" + k][1], hemG = A["hem" + k][1];
+      const apT = Math.min(yAt(apG), (side < 0 ? L.armpitL : L.armpitR)[1] - 0.5), hmT = yAt(hemG);
+      // titik pinggang (opsional): bagian pinggang baju dipasangkan ke garis pinggang tubuh
+      const wA = A["waist" + k], wT = L.waistY;
+      const useW = !!(wA && wA[1] > apG + 4 && wA[1] < hemG - 4 && wT < apT - 1 && wT > hmT + 1);
+      const mapY = (gy) => !useW ? apT + (hmT - apT) * ((gy - apG) / Math.max(1, hemG - apG))
+        : gy <= wA[1] ? apT + (wT - apT) * ((gy - apG) / Math.max(1, wA[1] - apG))
+        : wT + (hmT - wT) * ((gy - wA[1]) / Math.max(1, hemG - wA[1]));
+      if (useW) {
+        const row = L.at(wT), bodyHalf = side < 0 ? row.C - row.L : row.R - row.C;
+        const natural = natChestW / 2 + (Math.abs(wA[0] - gcx) - gHalfAp) * sy;
+        src.push(wA); dst.push([row.C + side * Math.max(bodyHalf + (fit.tight ? 0.25 : ease), natural), wT]);
+      }
       for (let j = 1; j <= N; j++) {
         const gy = ay + (hy - ay) * (j / N);
+        if (useW && Math.abs(gy - wA[1]) < (hy - ay) / N * 0.5) continue; // titik pinggang sudah mewakili baris ini
         const gx = j === N ? A["hem" + k][0] : sideEdge(g, gy, side, gcx);
         if (gx === null) continue;
-        // kalau ketiak baju ditarik turun ke ketiak tubuh, sisi baju di bawahnya ikut turun (tidak terlipat ke atas)
-        const apG = A["armpit" + k][1], apT = Math.min(yAt(apG), (side < 0 ? L.armpitL : L.armpitR)[1] - 0.5), hmT = yAt(A["hem" + k][1]);
-        const y = apT + (hmT - apT) * ((gy - apG) / Math.max(1, A["hem" + k][1] - apG)), row = L.at(y);
+        const y = mapY(gy), row = L.at(y);
         const bodyHalf = side < 0 ? row.C - row.L : row.R - row.C;
         const natural = natChestW / 2 + (Math.abs(gx - gcx) - gHalfAp) * sy;
         // badan berisi: sisi badan di bawah ketiak lebih lebar dari garis torso model, jadi kain diberi tambahan supaya tetap menutup
@@ -4116,17 +4129,17 @@ const KAL_HINT = {
   neck: "Titik paling bawah di tengah kerah depan.", shoulderL: "Ujung jahitan bahu, tempat lengan baju mulai.",
   shoulderR: "Ujung jahitan bahu, tempat lengan baju mulai.", armpitL: "Sudut antara lengan baju dan badan baju.",
   armpitR: "Sudut antara lengan baju dan badan baju.", cuffL: "Tengah ujung lengan baju.", cuffR: "Tengah ujung lengan baju.",
-  waistL: "Sisi kain di garis pinggang.", waistR: "Sisi kain di garis pinggang.", hemL: "Sudut bawah kain.", hemR: "Sudut bawah kain.",
+  waistL: "Sisi kain di bagian pinggang (biasanya bagian paling ramping). Titik ini dipasangkan ke pinggang model.", waistR: "Sisi kain di bagian pinggang (biasanya bagian paling ramping). Titik ini dipasangkan ke pinggang model.", hemL: "Sudut bawah kain.", hemR: "Sudut bawah kain.",
   crotch: "Titik pertemuan kedua kaki celana.", hemLo: "Sudut luar ujung kaki celana.", hemLi: "Sudut dalam ujung kaki celana.",
   hemRi: "Sudut dalam ujung kaki celana.", hemRo: "Sudut luar ujung kaki celana.",
 };
 function kalKeys(kat, pants) {
   if (kat === "bawahan") return pants ? ["waistL", "waistR", "crotch", "hemLo", "hemLi", "hemRi", "hemRo"] : ["waistL", "waistR", "hemL", "hemR"];
   const k = ["neck", "shoulderL", "shoulderR", "armpitL", "armpitR", "cuffL", "cuffR"];
-  if (kat === "dress") k.push("waistL", "waistR");
+  k.push("waistL", "waistR"); // pinggang: dipakai juga untuk atasan & outer (opsional)
   return k.concat(["hemL", "hemR"]);
 }
-const kal = { open: false, rowId: null, color: "", pts: {}, pants: false, img: null, sel: null, dirty: false, prevOutfit: null, p: null, size: "", tool: "pts", photoDirty: false, undo: [], editUrl: "" };
+const kal = { open: false, rowId: null, color: "", pts: {}, pants: false, img: null, sel: null, dirty: false, prevOutfit: null, p: null, size: "", tool: "pts", photoDirty: false, undo: [], editUrl: "", moved: new Set() };
 catalog.kal = null;
 
 function kalRows() { return CATALOG_ROWS; }
@@ -4144,7 +4157,11 @@ function kalAnchorStr() {
   const extra = String(kalSource(kalRow()).anchors || "").split(";").map((s) => s.trim()).filter((s) => /^pakai\s*=/.test(s));
   const orig = String(kalSource(kalRow()).anchors || "");
   const noCuff = extra.length && !/cuff[LR]\s*=/.test(orig); // foto dipakai model tanpa titik lengan: jangan tambah titik lengan tebakan
-  return kalKeys(kalRow().kategori, kal.pants).filter((k) => kal.pts[k] && !(noCuff && k.startsWith("cuff"))).map((k) => `${k}=${Math.round(kal.pts[k][0])},${Math.round(kal.pts[k][1])}`).concat(extra).join(";");
+  // titik pinggang atasan hanya disimpan kalau sudah ada sebelumnya atau sudah digeser
+  // (juga titik ujung lengan: kalau baju ini sudah punya titik tapi belum pakai titik lengan, tebakan lengan tidak ikut disimpan)
+  const opt = (k) => kalRow().kategori !== "bawahan" && (k === "waistL" || k === "waistR" || (orig.trim() && (k === "cuffL" || k === "cuffR")));
+  const skipWaist = (k) => opt(k) && !new RegExp(k + "\\s*=").test(orig) && !kal.moved.has(k);
+  return kalKeys(kalRow().kategori, kal.pants).filter((k) => kal.pts[k] && !(noCuff && k.startsWith("cuff") && !kal.moved.has(k)) && !skipWaist(k)).map((k) => `${k}=${Math.round(kal.pts[k][0])},${Math.round(kal.pts[k][1])}`).concat(extra).join(";");
 }
 /* ganti foto baris (foto utama atau foto varian) dengan foto lain, titiknya tetap */
 function kalRowFoto(row, foto) {
@@ -4290,7 +4307,7 @@ function kalSelect(id, color) {
   if (kal.dirty && (id !== kal.rowId || color !== kal.color)) {
     if (!confirmSwitch()) { document.getElementById("kal-product").value = kal.rowId; document.getElementById("kal-variant").value = kal.color; return; }
   }
-  kal.rowId = id; kal.color = color; kal.dirty = false; kal.sel = null;
+  kal.rowId = id; kal.color = color; kal.dirty = false; kal.sel = null; kal.moved = new Set();
   const row = kalRow();
   document.getElementById("kal-product").value = id;
   // varian warna yang punya foto sendiri
@@ -4319,7 +4336,12 @@ function kalSelect(id, color) {
     kal.pts = {};
     const keys = kalKeys(row.kategori, kal.pants);
     if (keys.every((k) => parsed[k])) { for (const k of keys) kal.pts[k] = parsed[k].slice(); kalMsg("Titik tersimpan dimuat. Geser titik yang kurang pas.", ""); }
-    else { kalAuto(false); for (const k of keys) if (parsed[k]) kal.pts[k] = parsed[k].slice(); kalMsg(src.anchors ? "Sebagian titik belum ada, sisanya ditebak otomatis. Periksa semua titik." : "Belum ada titik tersimpan. Titik ditebak otomatis dari bentuk foto, periksa dan geser yang kurang pas.", ""); }
+    else {
+      kalAuto(false); for (const k of keys) if (parsed[k]) kal.pts[k] = parsed[k].slice();
+      const onlyWaist = keys.filter((k) => !parsed[k]).every((k) => ["waistL", "waistR", "cuffL", "cuffR"].includes(k));
+      if (onlyWaist && row.kategori !== "bawahan") { kalWaistGuess(); kalMsg("Titik tersimpan dimuat. Titik pinggang (8, 9) baru ditebak: geser ke sisi baju di bagian pinggang kalau mau dipakai. Titik yang tidak digeser tidak ikut disimpan.", ""); }
+      else kalMsg(src.anchors ? "Sebagian titik belum ada, sisanya ditebak otomatis. Periksa semua titik." : "Belum ada titik tersimpan. Titik ditebak otomatis dari bentuk foto, periksa dan geser yang kurang pas.", "");
+    }
     renderKalPoints(); kalPreviewWear();
   }).catch(() => kalMsg("Foto tidak bisa dimuat.", "err"));
 }
@@ -4347,7 +4369,16 @@ function kalAuto(markDirty = true) {
     else if (k === "hemR" && a.hemRo) kal.pts[k] = [a.hemRo[0] - PAD, a.hemRo[1] - PAD];
     else kal.pts[k] = [img.naturalWidth / 2, img.naturalHeight / 2];
   }
+  if (row.kategori !== "bawahan" && !a.waistL) kalWaistGuess();
   if (markDirty) { kal.dirty = true; renderKalPoints(); kalPreviewWear(); kalMsg("Titik ditebak ulang dari bentuk foto. Periksa hasilnya di model.", ""); }
+}
+/* tebakan titik pinggang atasan: di garis ketiak → bawah, sedikit di bawah tengah */
+function kalWaistGuess() {
+  const P = kal.pts;
+  for (const s of ["L", "R"]) {
+    const ap = P["armpit" + s], hm = P["hem" + s];
+    if (ap && hm) P["waist" + s] = [ap[0] + (hm[0] - ap[0]) * 0.58, ap[1] + (hm[1] - ap[1]) * 0.58];
+  }
 }
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -4370,7 +4401,7 @@ function renderKalPoints() {
     ? (kal.pants ? [["waistL", "waistR"], ["waistL", "hemLo"], ["hemLo", "hemLi"], ["hemLi", "crotch"], ["crotch", "hemRi"], ["hemRi", "hemRo"], ["hemRo", "waistR"]]
       : [["waistL", "waistR"], ["waistL", "hemL"], ["hemL", "hemR"], ["hemR", "waistR"]])
     : [["shoulderL", "neck"], ["neck", "shoulderR"], ["shoulderL", "cuffL"], ["cuffL", "armpitL"], ["shoulderR", "cuffR"], ["cuffR", "armpitR"],
-      ["armpitL", row.kategori === "dress" ? "waistL" : "hemL"], ["armpitR", row.kategori === "dress" ? "waistR" : "hemR"],
+      ["armpitL", P.waistL ? "waistL" : "hemL"], ["armpitR", P.waistR ? "waistR" : "hemR"],
       ["waistL", "hemL"], ["waistR", "hemR"], ["hemL", "hemR"]];
   for (const [a, b] of chain) line(a, b);
   keys.forEach((k, i) => {
@@ -4406,7 +4437,7 @@ function wireKalDrag() {
     if (!drag || !kal.img) return;
     const q = toImg(e);
     kal.pts[drag] = [Math.max(0, Math.min(kal.img.naturalWidth, q.x)), Math.max(0, Math.min(kal.img.naturalHeight, q.y))];
-    kal.dirty = true; renderKalPoints(); kalPreviewWear();
+    kal.moved.add(drag); kal.dirty = true; renderKalPoints(); kalPreviewWear();
   });
   const end = () => { if (drag) { drag = null; kalPreviewWear(true); } };
   svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
@@ -4416,7 +4447,7 @@ function wireKalDrag() {
     if (!d) return;
     e.preventDefault();
     const k = g.dataset.k, s = e.shiftKey ? 5 : 1;
-    kal.sel = k; kal.pts[k] = [kal.pts[k][0] + d[0] * s, kal.pts[k][1] + d[1] * s]; kal.dirty = true;
+    kal.sel = k; kal.pts[k] = [kal.pts[k][0] + d[0] * s, kal.pts[k][1] + d[1] * s]; kal.moved.add(k); kal.dirty = true;
     renderKalPoints(); svg.querySelector(`[data-k="${k}"]`).focus(); kalPreviewWear();
   });
 }
