@@ -465,7 +465,15 @@ td.photo-cell { display: table-cell; }
 .kal-stage.cv.restore img { visibility: visible; opacity: 0.28; }
 .kal-stage.brush canvas { pointer-events: auto; cursor: crosshair; }
 .kal-stage.brush svg { pointer-events: none; opacity: 0.2; }
-.kal-tool { width: 270px; grid-template-columns: 1fr 1fr 1fr; }
+.kal-tool { width: 350px; grid-template-columns: 1fr 1fr 1.25fr 1fr; }
+.kal-stage.adding svg { cursor: crosshair; }
+.kal-pt.pin circle:not(.hit) { fill: var(--accent); stroke: var(--surface); }
+.kal-pt.pin text { fill: var(--accent); }
+.kal-pt.pin.sel circle:not(.hit) { fill: var(--surface); stroke: var(--accent); }
+.kal-list li.pin button b { border-radius: 5px; }
+.kal-list li.pin { display: flex; gap: 4px; }
+.kal-list li.pin .pin-del { width: auto; flex: none; padding: 5px 9px; color: var(--muted); }
+#kal-prev { touch-action: none; }
 .kal-brush { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
 .kal-brush input { width: 90px; accent-color: var(--accent); }
 .sheet-tools .btn-ghost:disabled { opacity: 0.45; cursor: default; }
@@ -685,7 +693,7 @@ td.photo-cell { display: table-cell; }
         <button type="button" role="radio" data-m="celana">Celana</button><button type="button" role="radio" data-m="rok">Rok</button>
       </div>
       <button type="button" class="btn-ghost" id="kal-auto">Tebak otomatis</button>
-      <div class="seg kal-tool" id="kal-tool" role="radiogroup" aria-label="Alat"><button type="button" role="radio" data-t="pts" aria-checked="true">Titik</button><button type="button" role="radio" data-t="erase" aria-checked="false">Hapus</button><button type="button" role="radio" data-t="restore" aria-checked="false">Kembalikan</button></div>
+      <div class="seg kal-tool" id="kal-tool" role="radiogroup" aria-label="Alat"><button type="button" role="radio" data-t="pts" aria-checked="true">Titik</button><button type="button" role="radio" data-t="erase" aria-checked="false">Hapus</button><button type="button" role="radio" data-t="restore" aria-checked="false">Kembalikan</button><button type="button" role="radio" data-t="add" aria-checked="false">+ Titik</button></div>
       <label class="kal-brush" id="kal-brush-w" hidden>Kuas <input type="range" id="kal-brush" min="4" max="90" value="26"></label>
       <button type="button" class="btn-ghost" id="kal-undo" hidden>Urungkan</button>
       <button type="button" class="btn-ghost" id="kal-dl" hidden>Unduh foto</button>
@@ -2152,7 +2160,8 @@ function loadGarment(p, color) {
     }
     x.putImageData(id, 0, 0);
     let anchors = parseAnchors(g.anchorsStr);
-    for (const k of Object.keys(anchors)) anchors[k] = [anchors[k][0] + PAD, anchors[k][1] + PAD];
+    // (pinXd = geseran titik tambahan, dalam cm di badan model: bukan koordinat foto)
+    for (const k of Object.keys(anchors)) if (!/^pin[A-Z]d$/.test(k)) anchors[k] = [anchors[k][0] + PAD, anchors[k][1] + PAD];
     const need = p.kategori === "bawahan" ? ["waistL", "waistR"] : ["shoulderL", "shoulderR", "armpitL", "armpitR", "hemL", "hemR"];
     if (need.some((k) => !anchors[k])) {
       // anchor belum diisi → dibaca otomatis dari bentuk foto (flat lay atau ghost mannequin)
@@ -2679,6 +2688,18 @@ function updateGarments() {
     const { src, dst, fit, sleevePairs } = garmentTargets(p, g, size, L);
     wornFit[p.id] = fit;
     if (src.length < 4) continue;
+    // titik tambahan (dibuat pemilik di kalibrasi): bagian foto itu digeser sejauh (dx, dy) cm dari posisi warp biasa
+    {
+      const pk = Object.keys(g.anchors).filter((k) => /^pin[A-Z]$/.test(k));
+      if (pk.length) {
+        const base = solveTPS(src, dst);
+        for (const k of pk) {
+          const s = g.anchors[k], d0 = g.anchors[k + "d"] || [0, 0], q = base(s[0], s[1]), t = [q[0] + d0[0], q[1] + d0[1]];
+          src.push(s); dst.push(t);
+          if (p.id === "__kal") kal.pinOut[k] = t;
+        }
+      }
+    }
     const mesh = (f) => {
       const pos = new Float32Array(GC * GR * 2);
       for (let r = 0; r < GR; r++) for (let c = 0; c < GC; c++) {
@@ -4144,7 +4165,7 @@ function kalKeys(kat, pants) {
   k.push("waistL", "waistR"); // pinggang: dipakai juga untuk atasan & outer (opsional)
   return k.concat(["hemL", "hemR"]);
 }
-const kal = { open: false, rowId: null, color: "", pts: {}, pants: false, img: null, sel: null, dirty: false, prevOutfit: null, p: null, size: "", tool: "pts", photoDirty: false, undo: [], editUrl: "", moved: new Set() };
+const kal = { open: false, rowId: null, color: "", pts: {}, pants: false, img: null, sel: null, dirty: false, prevOutfit: null, p: null, size: "", tool: "pts", photoDirty: false, undo: [], editUrl: "", moved: new Set(), pinD: {}, pinOut: {}, pinDrag: null };
 catalog.kal = null;
 
 function kalRows() { return CATALOG_ROWS; }
@@ -4166,7 +4187,7 @@ function kalAnchorStr() {
   // (juga titik ujung lengan: kalau baju ini sudah punya titik tapi belum pakai titik lengan, tebakan lengan tidak ikut disimpan)
   const opt = (k) => kalRow().kategori !== "bawahan" && (k === "waistL" || k === "waistR" || (orig.trim() && (k === "cuffL" || k === "cuffR")));
   const skipWaist = (k) => opt(k) && !new RegExp(k + "\\s*=").test(orig) && !kal.moved.has(k);
-  return kalKeys(kalRow().kategori, kal.pants).filter((k) => kal.pts[k] && !(noCuff && k.startsWith("cuff") && !kal.moved.has(k)) && !skipWaist(k)).map((k) => `${k}=${Math.round(kal.pts[k][0])},${Math.round(kal.pts[k][1])}`).concat(extra).join(";");
+  return kalKeys(kalRow().kategori, kal.pants).filter((k) => kal.pts[k] && !(noCuff && k.startsWith("cuff") && !kal.moved.has(k)) && !skipWaist(k)).map((k) => `${k}=${Math.round(kal.pts[k][0])},${Math.round(kal.pts[k][1])}`).concat(kalPinStr(), extra).join(";");
 }
 /* ganti foto baris (foto utama atau foto varian) dengan foto lain, titiknya tetap */
 function kalRowFoto(row, foto) {
@@ -4195,12 +4216,13 @@ function kalInitCanvas(img) {
 function kalSyncTool() {
   for (const b of document.querySelectorAll("#kal-tool button")) b.setAttribute("aria-checked", String(b.dataset.t === kal.tool));
   const st = document.querySelector(".kal-stage");
-  st.classList.toggle("brush", kal.tool !== "pts"); st.classList.toggle("restore", kal.tool === "restore");
-  document.getElementById("kal-brush-w").hidden = kal.tool === "pts";
+  const brush = kal.tool === "erase" || kal.tool === "restore";
+  st.classList.toggle("brush", brush); st.classList.toggle("restore", kal.tool === "restore"); st.classList.toggle("adding", kal.tool === "add");
+  document.getElementById("kal-brush-w").hidden = !brush;
   // tombol tetap terlihat selama mode kuas (tidak membuat tata letak bergeser saat mulai menghapus)
   const u = document.getElementById("kal-undo"), dl = document.getElementById("kal-dl");
-  u.hidden = kal.tool === "pts" && !kal.undo.length; u.disabled = !kal.undo.length;
-  dl.hidden = kal.tool === "pts" && !kal.photoDirty; dl.disabled = !kal.photoDirty;
+  u.hidden = !brush && !kal.undo.length; u.disabled = !kal.undo.length;
+  dl.hidden = !brush && !kal.photoDirty; dl.disabled = !kal.photoDirty;
 }
 function kalPhotoChanged() {
   kal.photoDirty = true; kal.dirty = true; kalSyncTool();
@@ -4244,7 +4266,9 @@ function wireKalBrush() {
     kal.tool = b.dataset.t; kalSyncTool();
     if (kal.tool === "erase") kalMsg("Gosok bagian foto yang mau dihapus, misalnya tangan atau sisa latar. Model di kanan langsung ikut berubah.", "");
     else if (kal.tool === "restore") kalMsg("Gosok bagian yang tadi terhapus untuk mengembalikannya (bayangan samar = foto asli).", "");
+    else if (kal.tool === "add") kalMsg("Klik di foto, di bagian baju yang mau diatur, untuk menaruh titik baru.", "");
   };
+  wireKalPrevDrag();
   document.getElementById("kal-undo").onclick = () => {
     const d = kal.undo.pop(); if (!d) return;
     cv.getContext("2d").putImageData(d, 0, 0);
@@ -4263,6 +4287,33 @@ function wireKalBrush() {
       } catch { kalMsg("Gagal mengunduh foto.", "err"); }
     }, "image/png");
   };
+}
+/* titik tambahan: pinA..pinZ = titik di foto, pinAd = geseran di badan model (cm) */
+function kalPinKeys() { return Object.keys(kal.pts).filter((k) => /^pin[A-Z]$/.test(k)).sort(); }
+function kalPinStr() {
+  const out = [];
+  for (const k of kalPinKeys()) {
+    out.push(`${k}=${Math.round(kal.pts[k][0])},${Math.round(kal.pts[k][1])}`);
+    const d = kal.pinD[k] || [0, 0];
+    if (Math.abs(d[0]) >= 0.05 || Math.abs(d[1]) >= 0.05) out.push(`${k}d=${d[0].toFixed(1)},${d[1].toFixed(1)}`);
+  }
+  return out;
+}
+const kalLabel = (k) => KAL_LABEL[k] || "Titik tambahan " + k.slice(3);
+const kalHint = (k) => KAL_HINT[k] || "Taruh titik ini di bagian baju yang mau diatur, lalu seret tanda huruf yang sama di model (kanan) ke posisi yang kamu mau.";
+function kalAddPin(pt) {
+  const used = new Set(kalPinKeys());
+  const L = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").find((c) => !used.has("pin" + c));
+  if (!L) { kalMsg("Maksimal 26 titik tambahan.", "err"); return; }
+  const k = "pin" + L;
+  kal.pts[k] = pt; kal.pinD[k] = [0, 0]; kal.sel = k; kal.dirty = true;
+  kal.tool = "pts"; kalSyncTool(); renderKalPoints(); kalPreviewWear(true);
+  kalMsg(`Titik ${L} ditambahkan. Seret tanda ${L} di model (kanan) ke posisi yang kamu mau. Titik di foto juga bisa digeser.`, "ok");
+}
+function kalDelPin(k) {
+  delete kal.pts[k]; delete kal.pinD[k]; delete kal.pinOut[k];
+  if (kal.sel === k) kal.sel = null;
+  kal.dirty = true; renderKalPoints(); kalPreviewWear(true);
 }
 function kalRowWith(row, str) {
   const r = { ...row };
@@ -4312,7 +4363,7 @@ function kalSelect(id, color) {
   if (kal.dirty && (id !== kal.rowId || color !== kal.color)) {
     if (!confirmSwitch()) { document.getElementById("kal-product").value = kal.rowId; document.getElementById("kal-variant").value = kal.color; return; }
   }
-  kal.rowId = id; kal.color = color; kal.dirty = false; kal.sel = null; kal.moved = new Set();
+  kal.rowId = id; kal.color = color; kal.dirty = false; kal.sel = null; kal.moved = new Set(); kal.pinD = {}; kal.pinOut = {};
   const row = kalRow();
   document.getElementById("kal-product").value = id;
   // varian warna yang punya foto sendiri
@@ -4347,6 +4398,7 @@ function kalSelect(id, color) {
       if (onlyWaist && row.kategori !== "bawahan") { kalWaistGuess(); kalMsg("Titik tersimpan dimuat. Titik pinggang (8, 9) baru ditebak: geser ke sisi baju di bagian pinggang kalau mau dipakai. Titik yang tidak digeser tidak ikut disimpan.", ""); }
       else kalMsg(src.anchors ? "Sebagian titik belum ada, sisanya ditebak otomatis. Periksa semua titik." : "Belum ada titik tersimpan. Titik ditebak otomatis dari bentuk foto, periksa dan geser yang kurang pas.", "");
     }
+    for (const k of Object.keys(parsed)) if (/^pin[A-Z]$/.test(k)) { kal.pts[k] = parsed[k].slice(); kal.pinD[k] = (parsed[k + "d"] || [0, 0]).slice(); }
     renderKalPoints(); kalPreviewWear();
   }).catch(() => kalMsg("Foto tidak bisa dimuat.", "err"));
 }
@@ -4427,7 +4479,25 @@ function renderKalPoints() {
     li.querySelector("button").onclick = () => { kal.sel = k; renderKalPoints(); svg.querySelector(`[data-k="${k}"]`).focus(); };
     list.appendChild(li);
   });
-  document.getElementById("kal-hint").textContent = kal.sel ? `${KAL_LABEL[kal.sel]}: ${KAL_HINT[kal.sel]} Geser titiknya, atau pakai tombol panah untuk menggeser 1 px (Shift = 5 px).` :
+  for (const k of kalPinKeys()) {
+    const L = k.slice(3);
+    const g = document.createElementNS(SVGNS, "g");
+    g.setAttribute("class", "kal-pt pin" + (kal.sel === k ? " sel" : "")); g.dataset.k = k;
+    g.setAttribute("tabindex", "0"); g.setAttribute("role", "button"); g.setAttribute("aria-label", kalLabel(k));
+    const c = document.createElementNS(SVGNS, "circle"); c.setAttribute("cx", P[k][0]); c.setAttribute("cy", P[k][1]); c.setAttribute("r", r);
+    c.setAttribute("stroke-width", Math.max(2, W / 260));
+    const hit = document.createElementNS(SVGNS, "circle"); hit.setAttribute("cx", P[k][0]); hit.setAttribute("cy", P[k][1]); hit.setAttribute("r", r * 2.6); hit.setAttribute("class", "hit");
+    const t = document.createElementNS(SVGNS, "text"); t.setAttribute("x", P[k][0]); t.setAttribute("y", P[k][1] - r * 1.6); t.setAttribute("font-size", fs);
+    t.textContent = L;
+    g.append(hit, c, t); svg.appendChild(g);
+    const li = document.createElement("li"); li.className = "pin" + (kal.sel === k ? " sel" : "");
+    li.innerHTML = `<button type="button"><b></b><span></span></button><button type="button" class="pin-del" aria-label="Hapus titik">&times;</button>`;
+    li.querySelector("b").textContent = L; li.querySelector("span").textContent = kalLabel(k);
+    li.querySelector("button").onclick = () => { kal.sel = k; renderKalPoints(); svg.querySelector(`[data-k="${k}"]`).focus(); };
+    li.querySelector(".pin-del").onclick = () => kalDelPin(k);
+    list.appendChild(li);
+  }
+  document.getElementById("kal-hint").textContent = kal.sel ? `${kalLabel(kal.sel)}: ${kalHint(kal.sel)} Geser titiknya, atau pakai tombol panah untuk menggeser 1 px (Shift = 5 px).` :
     "Seret titik bernomor ke posisi yang pas. Kiri dan kanan mengikuti sisi foto (bukan sisi badan pemakai).";
 }
 function wireKalDrag() {
@@ -4435,7 +4505,13 @@ function wireKalDrag() {
   let drag = null;
   const toImg = (e) => { const p = svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY; const m = svg.getScreenCTM(); return m ? p.matrixTransform(m.inverse()) : p; };
   svg.addEventListener("pointerdown", (e) => {
-    const g = e.target.closest(".kal-pt"); if (!g) return;
+    const g = e.target.closest(".kal-pt");
+    if (!g && kal.tool === "add" && kal.img) {
+      e.preventDefault(); const q = toImg(e);
+      kalAddPin([Math.max(0, Math.min(kal.img.naturalWidth, q.x)), Math.max(0, Math.min(kal.img.naturalHeight, q.y))]);
+      return;
+    }
+    if (!g) return;
     e.preventDefault(); drag = g.dataset.k; kal.sel = drag; svg.setPointerCapture(e.pointerId); renderKalPoints();
   });
   svg.addEventListener("pointermove", (e) => {
@@ -4493,7 +4569,54 @@ function kalPreviewCopy() {
   if (out.width !== Math.round(cw * dpr)) { out.width = Math.round(cw * dpr); out.height = Math.round(ch * dpr); }
   ctx.clearRect(0, 0, out.width, out.height);
   const sc = Math.min(out.width / sw, out.height / sh);
-  ctx.drawImage(canvas, sx, sy, sw, sh, (out.width - sw * sc) / 2, (out.height - sh * sc) / 2, sw * sc, sh * sc);
+  const ox = (out.width - sw * sc) / 2, oy = (out.height - sh * sc) / 2;
+  ctx.drawImage(canvas, sx, sy, sw, sh, ox, oy, sw * sc, sh * sc);
+  // titik tambahan: tanda di model yang bisa diseret
+  const fwd = (w) => [ox + (toX(w[0]) - sx) * sc, oy + (toY(w[1]) - sy) * sc];
+  kal.pv = {
+    fwd,
+    inv: (X, Y) => {
+      const cx = sx + (X - ox) / sc, cy = sy + (Y - oy) / sc;
+      return [cx / canvas.width * 2 * halfW - halfW + cam.cx, (1 - cy / canvas.height) * 2 * halfH - halfH + cam.cy];
+    },
+  };
+  const dpr2 = out.width / Math.max(1, cw);
+  for (const k of kalPinKeys()) {
+    const w = kal.pinDrag && kal.pinDrag.k === k ? kal.pinDrag.at : kal.pinOut[k];
+    if (!w) continue;
+    const [X, Y] = fwd(w), rr = 9 * dpr2;
+    ctx.beginPath(); ctx.arc(X, Y, rr, 0, Math.PI * 2);
+    ctx.fillStyle = kal.sel === k ? "#fff" : getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8c3d5e";
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 * dpr2; ctx.fill(); ctx.stroke();
+    ctx.fillStyle = kal.sel === k ? "#8c3d5e" : "#fff"; ctx.font = `700 ${11 * dpr2}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(k.slice(3), X, Y + 0.5 * dpr2);
+  }
+}
+function wireKalPrevDrag() {
+  const out = document.getElementById("kal-prev");
+  const at = (e) => { const r = out.getBoundingClientRect(); return [(e.clientX - r.left) * out.width / r.width, (e.clientY - r.top) * out.height / r.height]; };
+  out.addEventListener("pointerdown", (e) => {
+    if (!kal.pv) return;
+    const [X, Y] = at(e), dpr2 = out.width / Math.max(1, out.clientWidth);
+    let best = null, bd = 18 * dpr2;
+    for (const k of kalPinKeys()) {
+      const w = kal.pinOut[k]; if (!w) continue;
+      const [px, py] = kal.pv.fwd(w), d = Math.hypot(px - X, py - Y);
+      if (d < bd) { bd = d; best = k; }
+    }
+    if (!best) return;
+    e.preventDefault(); out.setPointerCapture(e.pointerId);
+    kal.sel = best; renderKalPoints();
+    kal.pinDrag = { k: best, start: kal.pv.inv(X, Y), d0: (kal.pinD[best] || [0, 0]).slice(), at: kal.pinOut[best].slice(), at0: kal.pinOut[best].slice() };
+  });
+  out.addEventListener("pointermove", (e) => {
+    const D = kal.pinDrag; if (!D) return;
+    const w = kal.pv.inv(...at(e)), dx = w[0] - D.start[0], dy = w[1] - D.start[1];
+    kal.pinD[D.k] = [D.d0[0] + dx, D.d0[1] + dy]; D.at = [D.at0[0] + dx, D.at0[1] + dy];
+    kal.dirty = true; kalPreviewCopy(); kalPreviewWear();
+  });
+  const end = () => { if (!kal.pinDrag) return; kal.pinDrag = null; kalPreviewWear(true); kalMsg("Titik digeser. Klik Simpan (atau Salin teks anchors) kalau sudah pas.", ""); };
+  out.addEventListener("pointerup", end); out.addEventListener("pointercancel", end);
 }
 async function kalSave() {
   if (!canManage || !artifactApi) { kalMsg("Hanya pemilik katalog yang bisa menyimpan.", "err"); return; }
