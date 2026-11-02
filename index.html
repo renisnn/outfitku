@@ -858,7 +858,7 @@ function factors(b, ref) {
   const DAMP = { chest: 0.6, upperArm: 0.7, thigh: 0.8, waist: 0.75 };
   const circ = (k) => (eB[k] / eR[k]) * (1 + DAMP[k] * (b[k] / eB[k] / (ref[k] / eR[k]) - 1));
   // Lingkar → lebar tampak depan. Dada & perut lebih banyak maju ke depan, jadi lebarnya naik lebih sedikit.
-  const W = { chest: 0.55, underbust: 0.7, waist: 0.7, hip: 0.9, thigh: 0.9, upperArm: 0.85, neck: 0.8, shoulder: 1, wrist: 0.8, ankle: 0.8 };
+  const W = { chest: 0.55, underbust: 0.7, waist: 1.15, hip: 0.65, thigh: 0.58, upperArm: 0.48, neck: 0.8, shoulder: 0.35, wrist: 0.8, ankle: 0.8 };
   const wf = (k, ratio) => 1 + (ratio / s - 1) * W[k];
   const r = (k) => wf(k, D[k] / R[k]);
   const chestC = circ("chest"), thighC = circ("thigh"), armC = circ("upperArm");
@@ -881,11 +881,11 @@ function factors(b, ref) {
   f.chestArm = chestWt + (f.chest - chestWt) * 0.25;
   const ubWt = wf("underbust", 0.5 * (eB.chest / eR.chest) + 0.5 * dims({ ...b, chest: eB.chest }).underbust / R.underbust);
   f.underbustArm = ubWt + (f.underbust - ubWt) * 0.25;
-  f.forearm = 0.8 * f.upperArm + 0.2 * f.wrist;
+  f.forearm = 0.55 * f.upperArm + 0.45 * f.wrist;
   f.wrist = 0.35 * f.upperArm + 0.65 * f.wrist;
   f.hand = 1 + (f.wrist - 1) * 0.5;
-  f.knee = 0.7 * f.thigh + 0.3 * f.ankle;
-  f.calf = 0.65 * f.thigh + 0.35 * f.ankle;
+  f.knee = 0.5 * f.thigh + 0.5 * f.ankle;
+  f.calf = 0.45 * f.thigh + 0.55 * f.ankle;
   f.foot = 1 + (f.ankle - 1) * 0.5;
   for (const k of Object.keys(f)) if (k !== "s") f[k] = clamp(f[k], 0.75, k === "face" ? 1.12 : 1.5);
   return f;
