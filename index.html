@@ -2696,6 +2696,32 @@ const G_IDX = (() => {
 let wornDraw = []; // [{g, pos(Float32Array), shadowPos}]
 let wornFit = {};
 
+/* Penempatan datar: transformasi seragam menjaga motif dan bentuk foto. */
+function useSimpleGarment(p) {
+  if (window.visitorKeepShape) return window.visitorKeepShape(p);
+  return p.id.startsWith('visitor-');
+}
+function simpleGarmentMesh(p, g, L) {
+  if (!g.simpleBounds) {
+    const cols = new Float64Array(g.w), rows = new Float64Array(g.h);
+    let count = 0;
+    for (let y=0; y<g.h; y++) for (let x=0; x<g.w; x++) if(g.alphaAll[y*g.w+x]>100){cols[x]++;rows[y]++;count++;}
+    const quantile=(a,f)=>{let n=0;for(let i=0;i<a.length;i++){n+=a[i];if(n>=count*f)return i;}return a.length-1;};
+    g.simpleBounds = count ? {left:quantile(cols,.005),right:quantile(cols,.995),top:quantile(rows,.005),bottom:quantile(rows,.995)} : {left:PAD,right:g.w-PAD,top:PAD,bottom:g.h-PAD};
+  }
+  const b=g.simpleBounds, width=Math.max(1,b.right-b.left), mid=(b.left+b.right)/2;
+  const bottom=p.kategori==='bawahan', bodyW=L.shR[0]-L.shL[0];
+  const top=bottom ? L.waistY*.55+L.lowWaistY*.45 : (L.shL[1]+L.shR[1])/2+1.8;
+  const center=L.at(top).C;
+  const naturalWidth=bottom ? (L.at(top).R-L.at(top).L)*1.25 : Math.max(bodyW*1.45,L.chestW*1.35);
+  const scale=naturalWidth/width, pos=new Float32Array(GC*GR*2),uv=new Float32Array(GC*GR*2);
+  for(let r=0;r<GR;r++)for(let c=0;c<GC;c++){
+    const i=(r*GC+c)*2,x=c/(GC-1)*g.w,y=r/(GR-1)*g.h;
+    pos[i]=center+(x-mid)*scale;pos[i+1]=top-(y-b.top)*scale;uv[i]=c/(GC-1);uv[i+1]=r/(GR-1);
+  }
+  return {productId:p.id,g,pos,uv,sleeves:{},simple:true,z:LAYER_Z[p.kategori]||3};
+}
+
 function updateGarments() {
   garmentsDirty = false;
   wornDraw = []; wornFit = {};
@@ -2706,6 +2732,11 @@ function updateGarments() {
   for (const { p, size, color } of items) {
     const g = loadGarment(p, color);
     if (g.status !== "ready") continue;
+    if (useSimpleGarment(p)) {
+      wornFit[p.id] = {};
+      wornDraw.push(simpleGarmentMesh(p, g, L));
+      continue;
+    }
     const { src, dst, fit, sleevePairs } = garmentTargets(p, g, size, L);
     wornFit[p.id] = fit;
     if (src.length < 4) continue;
@@ -2859,10 +2890,10 @@ function drawGarments(ap, au, uA) {
   // Kalau ada outer berlengan, lengan baju dalam (atasan/dress) disembunyikan: tertutup lengan outer,
   // dan supaya ujung bahunya tidak menyembul keluar dari bahu outer.
   const outerSleeved = upper.some((d) => d.z === 4 && d.g.sleeveCv);
-  const inner = (d) => outerSleeved && d.z < 4 && d.g.bodice;
+  const inner = (d) => !d.simple && outerSleeved && d.z < 4 && d.g.bodice;
   for (const d of upper) { drawGarmentPass(d, "shadow", ap, au, uA); drawGarmentPass(d, inner(d) ? "bodiceOnly" : "body", ap, au, uA); }
   // foto baju yang difoto dipakai model (anchor 'pakai'): lengannya sudah menutup lengan, jadi lengan model tidak digambar di atasnya
-  if (upper.length && !upper.some((d) => d.g.anchors && d.g.anchors.pakai)) drawArms(ap, au, uA);
+  if (upper.length && !upper.some((d) => d.simple || (d.g.anchors && d.g.anchors.pakai))) drawArms(ap, au, uA);
   for (const d of upper) if (d.g.sleeveCv && d.sleeves.L && !inner(d)) { drawGarmentPass(d, "sleeveL", ap, au, uA); drawGarmentPass(d, "sleeveR", ap, au, uA); }
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.idx);
 }
@@ -5072,7 +5103,7 @@ requestRender();
     const f=fits[d.productId];if(!f)return pos;
     const L=bodyLandmarks(), pivotY=d.z===1 ? L.waistY*.55+L.lowWaistY*.45 : (L.shL[1]+L.shR[1])/2;
     const cx=L.at(pivotY).C, a=-f.angle*Math.PI/180,c=Math.cos(a),s=Math.sin(a),out=new Float32Array(pos.length);
-    for(let i=0;i<pos.length;i+=2){const x=(pos[i]-cx)*f.width/100,y=(pos[i+1]-pivotY)*f.height/100;out[i]=cx+x*c-y*s+f.x;out[i+1]=pivotY+x*s+y*c+f.y;}return out;
+    for(let i=0;i<pos.length;i+=2){const x=(pos[i]-cx)*f.width/100,y=(pos[i+1]-pivotY)*(d.simple?f.width:f.height)/100;out[i]=cx+x*c-y*s+f.x;out[i+1]=pivotY+x*s+y*c+f.y;}return out;
   };
   function safeShopee(raw){try{const u=new URL(raw);return u.protocol==='https:'&&!u.username&&!u.password&&(['shopee.co.id','www.shopee.co.id','s.shopee.co.id','id.shp.ee','shp.ee'].includes(u.hostname))?u.href:null;}catch{return null;}}
   function library(){const el=$('vp-library');el.replaceChildren();for(const p of products.values()){
@@ -5107,7 +5138,7 @@ requestRender();
   try{const req=indexedDB.open('bilik-visitor-v1',1);req.onupgradeneeded=()=>req.result.createObjectStore('products',{keyPath:'id'});req.onsuccess=()=>{db=req.result;const r=db.transaction('products').objectStore('products').getAll();r.onsuccess=()=>{for(const p of r.result)products.set(p.id,p);library();garmentsDirty=true;renderWorn();requestRender();};};req.onerror=()=>{$('vp-status').textContent='Penyimpanan tidak tersedia; baju tambahan hanya berlaku selama halaman ini terbuka.';};}catch{}
   // Editor lokal dengan pratinjau; katalog asli tidak ditimpa.
   const editButton=document.createElement('button');editButton.type='button';editButton.className='btn-primary';editButton.textContent='Edit foto & titik baju';$('vp-reset').after(editButton);
-  const editor=document.createElement('section');editor.id='ve-editor';editor.hidden=true;editor.innerHTML=`<h3>Edit foto & titik</h3>
+  const editor=document.createElement('section');editor.id='ve-editor';editor.hidden=true;editor.innerHTML=`<h3>Edit foto & titik</h3><label class="vp-check"><input type="checkbox" id="ve-follow-body"> Ikuti tubuh dengan titik (lanjutan)</label><p id="ve-layout-note">Mode bentuk asli: edit latar dan kuas tetap berlaku. Aktifkan mode titik hanya jika ingin membentuk kain mengikuti tubuh.</p>
   <p>Hapus latar: klik warna latar di foto. Hapus objek: sapukan kuas untuk menghapus bagian foto (menjadi transparan).</p>
   <label>Alat<select id="ve-tool"><option value="points">Geser titik</option><option value="background">Hapus latar</option><option value="erase">Hapus objek / bagian foto</option><option value="add">Tambah titik</option></select></label>
   <label>Ukuran kuas <input id="ve-brush" type="range" min="4" max="100" value="25" aria-label="Ukuran kuas hapus"></label>
@@ -5161,9 +5192,9 @@ requestRender();
       const offsets={};for(const k of Object.keys(points)){if(/^pin[A-Z]d$/.test(k)){offsets[k.slice(0,-1)]=points[k];delete points[k];}}
       if(!Object.keys(points).length)throw Error('Baju belum terlihat di foto. Coba foto lain.');
       const draft={...item.p,id:'visitor-edit-'+crypto.randomUUID(),colors:[],fotoProduk:photoCanvas.toDataURL('image/png'),fotoKatalog:photoCanvas.toDataURL('image/png')};
-      E={photo:photoCanvas,points,offsets,key:Object.keys(points)[0],undo:[],original:item.p,draft,outfit:structuredClone(state.outfit),size:item.size};products.set(draft.id,draft);fits[draft.id]={...(fits[item.p.id]||defaults())};
+      E={photo:photoCanvas,points,offsets,key:Object.keys(points)[0],undo:[],original:item.p,draft,outfit:structuredClone(state.outfit),size:item.size};products.set(draft.id,draft);fits[draft.id]={...(fits[item.p.id]||defaults()),keepShape:window.visitorKeepShape(item.p)};
       state.outfit={...state.outfit,[draft.kategori]:{id:draft.id,size:item.size,color:''}};selected=draft.id;
-      $('vp-add').hidden=true;$('vp-adjust').hidden=true;editor.hidden=false;$('ve-tool').value='points';pointList();paint();preview();$('vp-status').textContent='Edit ini hanya untuk kamu. Katalog asli tetap ada.';
+      $('vp-add').hidden=true;$('vp-adjust').hidden=true;editor.hidden=false;$('ve-tool').value='points';$('ve-follow-body').checked=!window.visitorKeepShape(draft);pointList();paint();preview();$('vp-status').textContent='Edit ini hanya untuk kamu. Katalog asli tetap ada.';
     }catch(err){$('vp-status').textContent='Foto belum bisa diedit. Coba unggah foto bajunya sendiri. '+(err.message||'');}finally{editButton.disabled=false;}
   };
   const toPhoto=e=>{const r=cv.getBoundingClientRect();return [clamp((e.clientX-r.left)*cv.width/r.width,0,cv.width-1),clamp((e.clientY-r.top)*cv.height/r.height,0,cv.height-1)];};
@@ -5174,7 +5205,7 @@ requestRender();
   let drag=null;
   cv.onpointerdown=e=>{if(!E)return;e.preventDefault();const p=toPhoto(e),tool=$('ve-tool').value;
     if(tool==='background'){snapshot();flood(p);paint();preview();return;}
-    if(tool==='add'){const letter='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').find(k=>!E.points['pin'+k]);if(!letter){message('Maksimal 26 titik tambahan.');return;}snapshot();E.key='pin'+letter;E.points[E.key]=p;E.offsets[E.key]=[0,0];$('ve-tool').value='points';pointList();paint();preview();return;}
+    if(tool==='add'){const letter='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').find(k=>!E.points['pin'+k]);if(!letter){message('Maksimal 26 titik tambahan.');return;}snapshot();E.key='pin'+letter;E.points[E.key]=p;E.offsets[E.key]=[0,0];$('ve-tool').value='points';$('ve-follow-body').checked=!window.visitorKeepShape(draft);pointList();paint();preview();return;}
     if(tool==='points'){let key=null,dist=cv.width/14;for(const [k,v] of Object.entries(E.points)){const n=Math.hypot(v[0]-p[0],v[1]-p[1]);if(n<dist){key=k;dist=n;}}if(!key)return;snapshot();E.key=key;pointList();drag={key};paint();}
     else{snapshot();drag={last:p};erase(p,p);paint();}
     cv.setPointerCapture(e.pointerId);
@@ -5182,6 +5213,7 @@ requestRender();
   cv.onpointermove=e=>{if(!drag||!E)return;const p=toPhoto(e);if(drag.key)E.points[drag.key]=p;else{erase(drag.last,p);drag.last=p;}paint();queue();};
   const stop=()=>{if(!drag)return;drag=null;preview();};cv.onpointerup=stop;cv.onpointercancel=stop;
   cv.onkeydown=e=>{if(!E||$('ve-tool').value!=='points')return;const d={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[e.key];if(!d||!E.points[E.key])return;e.preventDefault();snapshot();const p=E.points[E.key],n=e.shiftKey?5:1;E.points[E.key]=[clamp(p[0]+d[0]*n,0,cv.width-1),clamp(p[1]+d[1]*n,0,cv.height-1)];paint();queue();};
+  $('ve-follow-body').onchange=()=>{if(!E)return;const f=fits[E.draft.id]||(fits[E.draft.id]=defaults());f.keepShape=!$('ve-follow-body').checked;garmentsDirty=true;preview();};
   $('ve-tool').onchange=()=>{drag=null;paint();};$('ve-point').onchange=()=>{E.key=$('ve-point').value;pointList();paint();};
   for(const [id,i] of [['ve-pin-x',0],['ve-pin-y',1]]){$(id).onpointerdown=()=>{if(E)snapshot();};$(id).oninput=()=>{if(!E||!/^pin/.test(E.key))return;const off=E.offsets[E.key]||(E.offsets[E.key]=[0,0]);off[i]=Number($(id).value);queue();};}
   $('ve-delete-pin').onclick=()=>{if(!E||!/^pin[A-Z]$/.test(E.key))return;snapshot();delete E.points[E.key];delete E.offsets[E.key];pointList();paint();preview();};
@@ -5196,6 +5228,34 @@ requestRender();
     }catch{message('Belum bisa menyimpan. Penyimpanan browser mungkin penuh. Edit masih bisa diatur atau dibatalkan.');}finally{button.disabled=false;$('ve-cancel').disabled=false;}
   };
   const normalClose=$('vp-close').onclick;$('vp-close').onclick=()=>{if(E){message('Klik Simpan editanku atau Batal sebelum menutup editor.');return;}normalClose();};
+
+  // Tampilan utama cukup ukuran, rotasi, dan geser langsung di model.
+  const easy=document.createElement('div');easy.id='vp-easy';easy.innerHTML=`<p><strong>Seret baju langsung di model</strong> untuk menggeser posisinya.</p>
+  <label class="vp-check"><input type="checkbox" id="vp-keep-shape"> Pertahankan bentuk & motif asli</label>
+  <label>Ukuran baju <output id="vp-size-value">100%</output><input type="range" id="vp-size" min="50" max="180" step="1" value="100" aria-label="Perbesar atau perkecil baju"></label>
+  <div class="vp-easy-row"><button type="button" id="vp-smaller">− Kecilkan</button><button type="button" id="vp-larger">+ Besarkan</button></div>
+  <div class="vp-easy-row"><button type="button" id="vp-rotate-left">↶ Putar kiri</button><button type="button" id="vp-rotate-right">↷ Putar kanan</button></div>
+  <button type="button" class="btn-primary" id="vp-auto-place">Pasang ulang otomatis</button>
+  <p id="vp-placement-note">Bentuk asli dipertahankan. Sesuaikan posisi dan ukurannya; kain belum mengikuti lekuk badan.</p>`;
+  $('vp-sliders').before(easy);
+  const advanced=document.createElement('details');advanced.id='vp-advanced';advanced.innerHTML='<summary>Pengaturan lanjutan</summary>';$('vp-sliders').before(advanced);advanced.append($('vp-sliders'));advanced.append($('vp-reset'));advanced.append(editButton);
+  editButton.textContent='Edit latar, hapus bagian & titik';
+  style.textContent+=`.vp-easy-row{display:flex;gap:8px;margin:10px 0}.vp-easy-row button{flex:1;padding:10px 5px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:inherit;font-size:12px}#vp-auto-place{width:100%;padding:10px}#vp-easy p{margin:10px 0}#vp-advanced{margin-top:12px}`;
+  window.visitorKeepShape=p=>fits[p.id]?.keepShape ?? p.id.startsWith('visitor-');
+  function easySync(){const p=wornItems().find(({p})=>p.id===selected)?.p,f=fits[selected]||defaults();$('vp-size').value=f.width;$('vp-size-value').textContent=Math.round(f.width)+'%';$('vp-keep-shape').checked=p ? window.visitorKeepShape(p) : true;$('vp-height').parentElement.hidden=$('vp-keep-shape').checked;$('vp-placement-note').textContent=$('vp-keep-shape').checked?'Bentuk asli dipertahankan. Sesuaikan posisi dan ukurannya; kain belum mengikuti lekuk badan.':'Baju mengikuti tubuh lewat titik. Kalau motif tertarik, aktifkan pertahankan bentuk asli.';}
+  function easyChange(fn){if(!selected)return;const f=fits[selected]||(fits[selected]=defaults());fn(f);writeStore('bilik.visitor.fits.v1',fits);sync();easySync();requestRender();}
+  $('vp-size').oninput=()=>{const n=Number($('vp-size').value);easyChange(f=>{const ratio=f.height/Math.max(1,f.width);f.width=n;f.height=clamp(n*ratio,50,180);});};
+  $('vp-smaller').onclick=()=>easyChange(f=>{f.width=clamp(f.width-5,50,180);f.height=clamp(f.height-5,50,180);});
+  $('vp-larger').onclick=()=>easyChange(f=>{f.width=clamp(f.width+5,50,180);f.height=clamp(f.height+5,50,180);});
+  $('vp-rotate-left').onclick=()=>easyChange(f=>f.angle=clamp(f.angle-2,-30,30));$('vp-rotate-right').onclick=()=>easyChange(f=>f.angle=clamp(f.angle+2,-30,30));
+  $('vp-keep-shape').onchange=()=>{const keep=$('vp-keep-shape').checked;easyChange(f=>{f.keepShape=keep;if(keep)f.height=f.width;});garmentsDirty=true;requestRender();};
+  $('vp-auto-place').onclick=()=>{easyChange(f=>Object.assign(f,defaults(),{keepShape:true}));garmentsDirty=true;requestRender();};
+  const oldOpen=window.openVisitorFit;window.openVisitorFit=id=>{oldOpen(id);easySync();};const oldSelect=$('vp-item').onchange;$('vp-item').onchange=()=>{oldSelect();easySync();};
+  const originalSync=sync;sync=()=>{originalSync();easySync();};
+  let easyDrag=null;
+  canvas.addEventListener('pointerdown',e=>{if(box.hidden||E||!selected||e.button!==0)return;e.preventDefault();e.stopImmediatePropagation();if(easyDrag)return;const f=fits[selected]||(fits[selected]=defaults());easyDrag={id:e.pointerId,x:e.clientX,y:e.clientY,baseX:f.x,baseY:f.y};canvas.setPointerCapture(e.pointerId);},true);
+  canvas.addEventListener('pointermove',e=>{if(!easyDrag||easyDrag.id!==e.pointerId)return;e.preventDefault();e.stopImmediatePropagation();const f=fits[selected]||(fits[selected]=defaults()),scale=cam.viewH/Math.max(1,canvas.getBoundingClientRect().height);f.x=clamp(easyDrag.baseX+(e.clientX-easyDrag.x)*scale,-25,25);f.y=clamp(easyDrag.baseY-(e.clientY-easyDrag.y)*scale,-30,30);requestRender();},true);
+  const finishMove=e=>{if(!easyDrag||easyDrag.id!==e.pointerId)return;e.preventDefault();e.stopImmediatePropagation();easyDrag=null;writeStore('bilik.visitor.fits.v1',fits);sync();};canvas.addEventListener('pointerup',finishMove,true);canvas.addEventListener('pointercancel',finishMove,true);
 
   library();
 })();
