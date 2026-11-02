@@ -2568,11 +2568,20 @@ function garmentTargets(p, g, size, L) {
     }
   }
   // badan baju melingkari tubuh (silinder): motif di tengah tetap proporsional, menyempit ke arah samping
+  // Kedua sisi berbagi tinggi tujuan. Kemiringan foto dikoreksi saat dipetakan,
+  // bukan dengan mengubah koordinat anchor asli pada foto.
+  const apGy = (A.armpitL[1] + A.armpitR[1]) / 2;
+  const apTargetY = Math.min(yAt(apGy), (L.armpitL[1] + L.armpitR[1]) / 2 - 0.5);
+  const hemTargetY = yAt(hemGy);
+  const useWaist = ["L", "R"].every((k) => {
+    const w = A["waist" + k];
+    return w && w[1] > A["armpit" + k][1] + 4 && w[1] < A["hem" + k][1] - 4;
+  }) && L.waistY < apTargetY - 1 && L.waistY > hemTargetY + 1;
   const cylRows = [];
   for (const side of [-1, 1]) {
     const k = side < 0 ? "L" : "R";
     if (A["armpit" + k]) {
-      const y = Math.min(yAt(A["armpit" + k][1]), (side < 0 ? L.armpitL : L.armpitR)[1] - 0.5);
+      const y = apTargetY;
       const row = L.at(y);
       const half = Math.max((row.R - row.L) / 2 + ease * 0.5 + 0.2 * Math.max(0, state.body.chest - 86), natChestW / 2);
       put("armpit" + k, [row.C + side * half, y]);
@@ -2580,16 +2589,16 @@ function garmentTargets(p, g, size, L) {
     // sisi baju mengikuti garis tubuh di banyak titik (ketiak → ujung bawah):
     // lebar = yang lebih besar antara tubuh + kelonggaran, atau lebar asli baju
     if (A["armpit" + k] && A["hem" + k]) {
-      const ay = A["armpit" + k][1] + 6, hy = A["hem" + k][1] - 2;
+      const ay = A["armpit" + k][1], hy = A["hem" + k][1];
       const gHalfAp = A.armpitR ? (A.armpitR[0] - A.armpitL[0]) / 2 : gsw / 2;
       const N = 9;
       let prevBody = -1, prevHalf = 0;
       // kalau ketiak baju ditarik turun ke ketiak tubuh, sisi baju di bawahnya ikut turun (tidak terlipat ke atas)
       const apG = A["armpit" + k][1], hemG = A["hem" + k][1];
-      const apT = Math.min(yAt(apG), (side < 0 ? L.armpitL : L.armpitR)[1] - 0.5), hmT = yAt(hemG);
+      const apT = apTargetY, hmT = hemTargetY;
       // titik pinggang (opsional): bagian pinggang baju dipasangkan ke garis pinggang tubuh
       const wA = A["waist" + k], wT = L.waistY;
-      const useW = !!(wA && wA[1] > apG + 4 && wA[1] < hemG - 4 && wT < apT - 1 && wT > hmT + 1);
+      const useW = useWaist;
       const mapY = (gy) => !useW ? apT + (hmT - apT) * ((gy - apG) / Math.max(1, hemG - apG))
         : gy <= wA[1] ? apT + (wT - apT) * ((gy - apG) / Math.max(1, wA[1] - apG))
         : wT + (hmT - wT) * ((gy - wA[1]) / Math.max(1, hemG - wA[1]));
@@ -2599,8 +2608,12 @@ function garmentTargets(p, g, size, L) {
         src.push(wA); dst.push([row.C + side * Math.max(bodyHalf + (fit.tight ? 0.25 : ease), natural), wT]);
       }
       for (let j = 1; j <= N; j++) {
-        const gy = ay + (hy - ay) * (j / N);
-        if (useW && Math.abs(gy - wA[1]) < (hy - ay) / N * 0.5) continue; // titik pinggang sudah mewakili baris ini
+        // Sampel pada tinggi tubuh yang sama, sekalipun titik foto kiri/kanan miring.
+        const t = j / N, yRow = apT + (hmT - apT) * t;
+        const gy = !useW ? ay + (hy - ay) * t
+          : yRow >= wT ? apG + (wA[1] - apG) * ((yRow - apT) / (wT - apT))
+          : wA[1] + (hemG - wA[1]) * ((yRow - wT) / (hmT - wT));
+        if (useW && Math.abs(gy - wA[1]) < 0.01) continue;
         const gx = j === N ? A["hem" + k][0] : sideEdge(g, gy, side, gcx);
         if (gx === null) continue;
         const y = mapY(gy), row = L.at(y);
@@ -2624,7 +2637,7 @@ function garmentTargets(p, g, size, L) {
         if ((row.leg || !fit.tight) && prevBody >= 0 && bodyHalf < prevBody) half = Math.max(half, prevHalf);
         prevBody = Math.max(prevBody, bodyHalf); prevHalf = Math.max(prevHalf, half);
         src.push([gx, gy]); dst.push([row.C + side * half, y]);
-        (cylRows[j] = cylRows[j] || { gy, y, C: row.C })[k] = { gx, x: row.C + side * half };
+        (cylRows[j] = cylRows[j] || { y, C: row.C })[k] = { gx, gy, x: row.C + side * half };
       }
     }
     const SL = g.sleeve && g.sleeve[k];
@@ -2659,8 +2672,16 @@ function garmentTargets(p, g, size, L) {
       put("cuff" + k, alongPolyline(pts, len));
     }
   }
-  src.push([gcx, hemGy]); dst.push([L.at(yAt(hemGy)).C, yAt(hemGy)]);
-    return { src, dst, fit, sleevePairs };
+  // Kunci garis tengah badan baju. Tanpa ini TPS bisa menarik bagian tengah
+  // mengikuti lengan dan membuat motif/jahitan melengkung ke salah satu sisi.
+  src.push([(A.armpitL[0] + A.armpitR[0]) / 2, apGy]);
+  dst.push([L.at(apTargetY).C, apTargetY]);
+  for (const row of cylRows) {
+    if (!row || !row.L || !row.R) continue;
+    src.push([(row.L.gx + row.R.gx) / 2, (row.L.gy + row.R.gy) / 2]);
+    dst.push([row.C, row.y]);
+  }
+  return { src, dst, fit, sleevePairs };
 }
 
 /* Mesh pakaian: grid di atas foto, setiap titik dipetakan lewat TPS */
@@ -2737,7 +2758,7 @@ function updateGarments() {
       const S2 = src.slice(), D2 = dst.slice();
       for (const k of ["L", "R"]) { S2.push(...sleevePts[k][0]); D2.push(...sleevePts[k][1]); }
       const pos = mesh(solveTPS(S2, D2));
-      wornDraw.push({ g, pos, uv, sleeves: g.sleeveCv ? { L: pos, R: pos } : {}, z: LAYER_Z[p.kategori] || 3 });
+      wornDraw.push({ productId: p.id, g, pos, uv, sleeves: g.sleeveCv ? { L: pos, R: pos } : {}, z: LAYER_Z[p.kategori] || 3 });
       continue;
     }
     // Badan baju & lengan baju punya warp sendiri-sendiri, tapi berbagi titik pangkal
@@ -2785,7 +2806,7 @@ function updateGarments() {
         }
       }
     }
-    wornDraw.push({ g, pos: posBody, uv, sleeves, bodice: true, z: LAYER_Z[p.kategori] || 3 });
+    wornDraw.push({ productId: p.id, g, pos: posBody, uv, sleeves, bodice: true, z: LAYER_Z[p.kategori] || 3 });
   }
   wornDraw.sort((a, b) => a.z - b.z);
   renderWorn();
@@ -2819,9 +2840,9 @@ function drawGarmentPass(d, which, ap, au, uA) {
   if (which === "shadow") {
     const shPos = new Float32Array(d.pos.length);
     for (let i = 0; i < shPos.length; i += 2) { shPos[i] = d.pos[i]; shPos[i + 1] = d.pos[i + 1] - 0.35; }
-    gl.bufferData(gl.ARRAY_BUFFER, shPos, gl.DYNAMIC_DRAW);
-  } else if (which === "sleeveL" || which === "sleeveR") gl.bufferData(gl.ARRAY_BUFFER, d.sleeves[which.slice(-1)], gl.DYNAMIC_DRAW);
-  else gl.bufferData(gl.ARRAY_BUFFER, d.pos, gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, window.visitorFitMesh ? window.visitorFitMesh(d, shPos) : shPos, gl.DYNAMIC_DRAW);
+  } else if (which === "sleeveL" || which === "sleeveR") gl.bufferData(gl.ARRAY_BUFFER, window.visitorFitMesh ? window.visitorFitMesh(d, d.sleeves[which.slice(-1)]) : d.sleeves[which.slice(-1)], gl.DYNAMIC_DRAW);
+  else gl.bufferData(gl.ARRAY_BUFFER, window.visitorFitMesh ? window.visitorFitMesh(d, d.pos) : d.pos, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap, 2, gl.FLOAT, false, 0, 0);
   const tex = which === "shadow" ? G.sh : which === "sleeveL" ? G.slL : which === "sleeveR" ? G.slR : ((d.bodice || which === "bodiceOnly") && G.bod ? G.bod : G.tex);
   if (!tex) return;
@@ -2867,7 +2888,7 @@ function wornItems() {
   for (const cat of ["bawahan", "dress", "atasan", "outer"]) {
     const it = o[cat];
     if (!it) continue;
-    const p = it.id === "__kal" ? catalog.kal : catalog.products.find((x) => x.id === it.id);
+    const p = it.id === "__kal" ? catalog.kal : (catalog.products.find((x) => x.id === it.id) || window.visitorProducts?.get(it.id));
     if (p) out.push({ p, size: it.size, color: (p.colors || []).some((c) => c.name === it.color) ? it.color : (p.colors && p.colors[0] ? p.colors[0].name : "") });
   }
   return out;
@@ -2938,6 +2959,11 @@ function renderWorn() {
     } else nm.removeAttribute("href");
     chip.querySelector("button").setAttribute("aria-label", "Lepas " + p.nama);
     chip.querySelector("button").onclick = () => { const o = { ...state.outfit }; o[p.kategori] = null; state.outfit = o; writeStore("mixmatch.outfit.v1", o); garmentsDirty = true; renderWorn(); requestRender(); };
+    if (p.id !== "__kal") {
+      const adjust = document.createElement("button"); adjust.type = "button";
+      adjust.textContent = "Sesuaikan"; adjust.setAttribute("aria-label", "Sesuaikan " + p.nama);
+      adjust.onclick = () => window.openVisitorFit?.(p.id); chip.appendChild(adjust);
+    }
     el.appendChild(chip);
   }
   if (typeof renderOutfitBtn === "function") renderOutfitBtn();
@@ -4774,7 +4800,7 @@ function renderSaved() {
   ul.replaceChildren();
   document.getElementById("of-saved-empty").hidden = !!list.length;
   for (const [i, s] of list.entries()) {
-    const ps = Object.values(s.outfit || {}).filter(Boolean).map((it) => catalog.products.find((x) => x.id === it.id)).filter(Boolean);
+    const ps = Object.values(s.outfit || {}).filter(Boolean).map((it) => catalog.products.find((x) => x.id === it.id) || window.visitorProducts?.get(it.id)).filter(Boolean);
     const li = document.createElement("li"); li.className = "preset";
     li.innerHTML = `<div class="preset-info"><div class="preset-name"></div><div class="preset-meta"></div></div>
       <div class="preset-actions"><button type="button" class="use">Pakai</button><button type="button">Hapus</button></div>`;
@@ -4784,7 +4810,7 @@ function renderSaved() {
     use.disabled = !ps.length;
     use.onclick = () => {
       const o = { atasan: null, bawahan: null, dress: null, outer: null };
-      for (const [k, it] of Object.entries(s.outfit || {})) if (it && catalog.products.some((x) => x.id === it.id)) o[k] = it;
+      for (const [k, it] of Object.entries(s.outfit || {})) if (it && (catalog.products.some((x) => x.id === it.id) || window.visitorProducts?.has(it.id))) o[k] = it;
       state.outfit = o; writeStore("mixmatch.outfit.v1", o); garmentsDirty = true; renderWorn(); requestRender();
     };
     del.onclick = () => { const l = readSaved(); l.splice(i, 1); writeStore(OUTFIT_SAVED, l); renderSaved(); };
@@ -4991,5 +5017,96 @@ renderPresets();
 updateMesh(state.body);
 try { initGL(); } catch (err) { console.error(err); showGLError("Browser ini tidak mendukung tampilan model (WebGL). Coba buka di Chrome, Safari, atau Firefox terbaru."); }
 requestRender();
+</script>
+<script>
+/* Pengaturan pribadi pengunjung; tidak mengubah katalog pemilik. */
+(() => {
+  const products = window.visitorProducts = new Map();
+  const fits = readStore('bilik.visitor.fits.v1', {});
+  const defaults = () => ({x:0,y:0,width:100,height:100,angle:0});
+  let selected = '', db, busy = false;
+  const $ = id => document.getElementById(id);
+  const box = document.createElement('section');
+  box.id='visitor-panel'; box.hidden=true; box.setAttribute('aria-label','Coba dan sesuaikan baju');
+  box.innerHTML=`<div class="vp-head"><h2>Coba baju sendiri</h2><button type="button" id="vp-close" aria-label="Tutup pengaturan baju">×</button></div>
+  <div class="vp-content"><details id="vp-add"><summary>Tambah baju dari Shopee</summary>
+  <p>Tempel link dan unggah foto bajunya. Link tidak mengambil foto otomatis. Pilih foto satu baju tampak depan; PNG tanpa latar memberi hasil terbaik.</p>
+  <form id="vp-form"><label>Link Shopee<input id="vp-url" type="url" placeholder="https://shopee.co.id/…" required></label>
+  <label>Nama baju<input id="vp-name" maxlength="100" placeholder="Baju pilihanku" required></label>
+  <label>Jenis<select id="vp-category"><option value="atasan">Atasan</option><option value="bawahan">Rok / celana</option><option value="dress">Dress</option><option value="outer">Outer</option></select></label>
+  <label>Foto baju<input id="vp-photo" type="file" accept="image/png,image/jpeg,image/webp" required></label>
+  <label class="vp-check"><input id="vp-bg" type="checkbox"> Hapus latar putih polos</label>
+  <button type="submit" class="btn-primary" id="vp-submit">Tambahkan & coba</button></form></details>
+  <p id="vp-status" role="status" aria-live="polite"></p>
+  <div id="vp-adjust"><label>Baju yang diatur<select id="vp-item"></select></label>
+  <p>Sesuaikan tampilan di model. Ini perkiraan visual, bukan jaminan ukuran asli.</p>
+  <div id="vp-sliders"></div><button type="button" class="btn-ghost" id="vp-reset">Kembalikan posisi awal</button></div>
+  <details><summary>Baju tambahanku</summary><div id="vp-library"></div><p>Disimpan di browser ini saja. Tidak masuk katalog publik.</p></details></div>`;
+  document.body.appendChild(box);
+  const launcher=document.createElement('button'); launcher.id='visitor-launch'; launcher.type='button'; launcher.className='btn-primary'; launcher.textContent='Coba & sesuaikan baju';
+  document.querySelector('#panel-catalog .section-head').after(launcher);
+  const style=document.createElement('style'); style.textContent=`
+  #visitor-launch{width:100%;margin:0 0 14px}#visitor-panel[hidden]{display:none!important}
+  #visitor-panel{position:fixed;z-index:65;right:16px;top:80px;width:310px;max-height:calc(100dvh - 100px);background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:16px;box-shadow:0 12px 45px #0003;display:flex;flex-direction:column}
+  .vp-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}.vp-head h2{font-size:18px;margin:0}.vp-head button{font-size:24px;border:0;background:none;color:inherit;cursor:pointer}.vp-content{padding:14px 16px;overflow:auto}.vp-content p{font-size:12px;line-height:1.5;color:var(--muted)}.vp-content label{display:block;font-size:12px;margin:12px 0}.vp-content input:not([type=checkbox]),.vp-content select{display:block;width:100%;box-sizing:border-box;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:inherit}.vp-content input[type=range]{padding:0;accent-color:var(--accent)}.vp-content input[type=file]{font-size:12px}.vp-content summary{cursor:pointer;font-weight:600;padding:8px 0}.vp-content output{float:right}.vp-content .vp-check{display:flex;gap:8px;align-items:center}#vp-library>div{display:flex;gap:8px;align-items:center;margin:8px 0}#vp-library span{flex:1;font-size:12px}#vp-library button{font-size:12px;padding:6px}.vp-content button{cursor:pointer}#vp-status{color:var(--accent)}
+  @media(max-width:1023px){#visitor-panel{top:auto;bottom:12px;right:12px;left:12px;width:auto;max-height:43dvh}.vp-head{padding:8px 14px}.vp-content{padding:8px 14px}body:has(#visitor-panel:not([hidden])) .tabs,body:has(#visitor-panel:not([hidden])) .panel{visibility:hidden}}
+  `; document.head.appendChild(style);
+  const fields=[['width','Lebar',50,180,1,'%'],['height','Panjang',50,180,1,'%'],['x','Geser kiri / kanan',-25,25,0.5,' cm'],['y','Geser atas / bawah',-30,30,0.5,' cm'],['angle','Kemiringan',-30,30,0.5,'°']];
+  for(const [key,label,min,max,step,unit] of fields){
+    const wrap=document.createElement('label');wrap.textContent=label;
+    const output=document.createElement('output');output.id='vp-value-'+key;wrap.append(output);
+    const input=document.createElement('input');input.type='range';input.id='vp-'+key;input.min=min;input.max=max;input.step=step;input.setAttribute('aria-label',label+' baju');wrap.append(input);$('vp-sliders').append(wrap);
+    input.oninput=()=>{if(!selected)return;const fit=fits[selected]||(fits[selected]=defaults());fit[key]=Number(input.value);output.textContent=input.value+unit;writeStore('bilik.visitor.fits.v1',fits);requestRender();};
+  }
+  function sync(){
+    const items=wornItems().filter(({p})=>p.id!=='__kal'); const sel=$('vp-item');sel.replaceChildren();
+    for(const {p} of items){const o=new Option(p.nama,p.id);sel.add(o);}if(!items.some(({p})=>p.id===selected))selected=items[0]?.p.id||'';sel.value=selected;
+    $('vp-adjust').hidden=!selected;
+    const f=fits[selected]||defaults();for(const [key,, , , ,unit] of fields){$('vp-'+key).value=f[key];$('vp-value-'+key).textContent=f[key]+unit;}
+  }
+  window.openVisitorFit=id=>{selected=id||'';box.hidden=false;sync();};
+  launcher.onclick=()=>{window.openVisitorFit();$('vp-add').open=true;};$('vp-close').onclick=()=>{box.hidden=true;};$('vp-item').onchange=()=>{selected=$('vp-item').value;sync();};
+  $('vp-reset').onclick=()=>{if(selected){delete fits[selected];writeStore('bilik.visitor.fits.v1',fits);sync();requestRender();}};
+  // Semua pass (badan, bayangan, lengan) memakai transformasi yang sama.
+  window.visitorFitMesh=(d,pos)=>{
+    const f=fits[d.productId];if(!f)return pos;
+    const L=bodyLandmarks(), pivotY=d.z===1 ? L.waistY*.55+L.lowWaistY*.45 : (L.shL[1]+L.shR[1])/2;
+    const cx=L.at(pivotY).C, a=-f.angle*Math.PI/180,c=Math.cos(a),s=Math.sin(a),out=new Float32Array(pos.length);
+    for(let i=0;i<pos.length;i+=2){const x=(pos[i]-cx)*f.width/100,y=(pos[i+1]-pivotY)*f.height/100;out[i]=cx+x*c-y*s+f.x;out[i+1]=pivotY+x*s+y*c+f.y;}return out;
+  };
+  function safeShopee(raw){try{const u=new URL(raw);return u.protocol==='https:'&&!u.username&&!u.password&&(['shopee.co.id','www.shopee.co.id','s.shopee.co.id','id.shp.ee','shp.ee'].includes(u.hostname))?u.href:null;}catch{return null;}}
+  function library(){const el=$('vp-library');el.replaceChildren();for(const p of products.values()){
+    const row=document.createElement('div'),name=document.createElement('span'),wear=document.createElement('button'),del=document.createElement('button');name.textContent=p.nama;wear.textContent='Coba';del.textContent='Hapus';wear.type=del.type='button';
+    wear.onclick=()=>{if(!isWorn(p))wearProduct(p,'BEBAS','');window.openVisitorFit(p.id);};
+    del.onclick=async()=>{try{if(db)await save('delete',p.id);products.delete(p.id);if(isWorn(p)){state.outfit[p.kategori]=null;writeStore('mixmatch.outfit.v1',state.outfit);}delete fits[p.id];writeStore('bilik.visitor.fits.v1',fits);garmentsDirty=true;renderWorn();requestRender();library();sync();}catch{$('vp-status').textContent='Belum bisa menghapus baju. Coba lagi.';}};
+    row.append(name,wear,del);el.append(row);
+  }if(!products.size)el.textContent='Belum ada baju tambahan.';}
+  function save(op,value){return new Promise((resolve,reject)=>{const tx=db.transaction('products','readwrite');tx.objectStore('products')[op](value);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
+  async function photo(file,remove){
+    if(!file||!['image/png','image/jpeg','image/webp'].includes(file.type))throw Error('Pilih foto PNG, JPG, atau WebP.');
+    if(file.size>12*1024*1024)throw Error('Foto maksimal 12 MB.');
+    const url=URL.createObjectURL(file);let img;try{img=await loadImg(url);}finally{URL.revokeObjectURL(url);}
+    const scale=Math.min(1,1000/Math.max(img.width,img.height)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(img,0,0,c.width,c.height);
+    if(remove){ // Hanya putih yang tersambung ke tepi; detail putih di dalam baju tetap ada.
+      const id=x.getImageData(0,0,c.width,c.height),d=id.data,w=c.width,h=c.height,seen=new Uint8Array(w*h),q=new Int32Array(w*h);let head=0,tail=0;
+      const add=i=>{if(seen[i])return;seen[i]=1;const p=i*4;if(d[p+3]===0||(Math.min(d[p],d[p+1],d[p+2])>235&&Math.max(d[p],d[p+1],d[p+2])-Math.min(d[p],d[p+1],d[p+2])<18)){q[tail++]=i;d[p+3]=0;}};
+      for(let i=0;i<w;i++){add(i);add((h-1)*w+i);}for(let j=0;j<h;j++){add(j*w);add(j*w+w-1);}while(head<tail){const i=q[head++];if(i%w)add(i-1);if(i%w<w-1)add(i+1);if(i>=w)add(i-w);if(i<w*(h-1))add(i+w);}x.putImageData(id,0,0);
+    }
+    const pixels=x.getImageData(0,0,c.width,c.height).data;
+    let visible=0;for(let i=3;i<pixels.length;i+=4)if(pixels[i]>100)visible++;
+    if(visible<100)throw Error('Baju tidak terlihat di foto. Coba foto lain atau matikan hapus latar putih.');
+    return c.toDataURL('image/png');
+  }
+  $('vp-form').onsubmit=async e=>{e.preventDefault();if(busy)return;busy=true;$('vp-submit').disabled=true;$('vp-status').textContent='Menyiapkan foto…';
+    try{const link=safeShopee($('vp-url').value.trim());if(!link)throw Error('Gunakan link HTTPS Shopee Indonesia atau link pendek Shopee.');const name=$('vp-name').value.trim();if(!name)throw Error('Isi nama bajunya dulu.');
+      const image=await photo($('vp-photo').files[0],$('vp-bg').checked),p={id:'visitor-'+crypto.randomUUID(),nama:name,brand:'Baju sendiri',kategori:$('vp-category').value,harga:0,sizes:['BEBAS'],chart:{},colors:[],warna:'',fotoProduk:image,fotoKatalog:image,anchors:'',shopee:link,tema:[]};
+      let stored=false;if(db){try{await save('put',p);stored=true;}catch{}}
+      products.set(p.id,p);wearProduct(p,'BEBAS','');selected=p.id;library();sync();$('vp-add').open=false;$('vp-status').textContent=stored?'Baju ditambahkan. Atur posisi dan ukurannya di bawah.':'Baju siap dicoba. Penyimpanan browser tidak tersedia; baju ini hilang saat halaman ditutup.';$('vp-form').reset();
+    }catch(err){$('vp-status').textContent=err.message||'Foto belum bisa diproses. Coba foto lain.';}finally{busy=false;$('vp-submit').disabled=false;}
+  };
+  try{const req=indexedDB.open('bilik-visitor-v1',1);req.onupgradeneeded=()=>req.result.createObjectStore('products',{keyPath:'id'});req.onsuccess=()=>{db=req.result;const r=db.transaction('products').objectStore('products').getAll();r.onsuccess=()=>{for(const p of r.result)products.set(p.id,p);library();garmentsDirty=true;renderWorn();requestRender();};};req.onerror=()=>{$('vp-status').textContent='Penyimpanan tidak tersedia; baju tambahan hanya berlaku selama halaman ini terbuka.';};}catch{}
+  library();
+})();
+
 </script>
 </body></html>
