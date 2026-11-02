@@ -2699,7 +2699,7 @@ let wornFit = {};
 /* Penempatan datar: transformasi seragam menjaga motif dan bentuk foto. */
 function useSimpleGarment(p) {
   if (window.visitorKeepShape) return window.visitorKeepShape(p);
-  return p.id.startsWith('visitor-');
+  return !!p.community || p.id.startsWith('visitor-');
 }
 function simpleGarmentMesh(p, g, L) {
   if (!g.simpleBounds) {
@@ -2719,7 +2719,7 @@ function simpleGarmentMesh(p, g, L) {
     const i=(r*GC+c)*2,x=c/(GC-1)*g.w,y=r/(GR-1)*g.h;
     pos[i]=center+(x-mid)*scale;pos[i+1]=top-(y-b.top)*scale;uv[i]=c/(GC-1);uv[i+1]=r/(GR-1);
   }
-  return {productId:p.id,g,pos,uv,sleeves:{},simple:true,z:LAYER_Z[p.kategori]||3};
+  return {productId:p.id,defaultFit:p.defaultFit,g,pos,uv,sleeves:{},simple:true,z:LAYER_Z[p.kategori]||3};
 }
 
 function updateGarments() {
@@ -2789,7 +2789,7 @@ function updateGarments() {
       const S2 = src.slice(), D2 = dst.slice();
       for (const k of ["L", "R"]) { S2.push(...sleevePts[k][0]); D2.push(...sleevePts[k][1]); }
       const pos = mesh(solveTPS(S2, D2));
-      wornDraw.push({ productId: p.id, g, pos, uv, sleeves: g.sleeveCv ? { L: pos, R: pos } : {}, z: LAYER_Z[p.kategori] || 3 });
+      wornDraw.push({ productId: p.id, defaultFit:p.defaultFit, g, pos, uv, sleeves: g.sleeveCv ? { L: pos, R: pos } : {}, z: LAYER_Z[p.kategori] || 3 });
       continue;
     }
     // Badan baju & lengan baju punya warp sendiri-sendiri, tapi berbagi titik pangkal
@@ -2837,7 +2837,7 @@ function updateGarments() {
         }
       }
     }
-    wornDraw.push({ productId: p.id, g, pos: posBody, uv, sleeves, bodice: true, z: LAYER_Z[p.kategori] || 3 });
+    wornDraw.push({ productId: p.id, defaultFit:p.defaultFit, g, pos: posBody, uv, sleeves, bodice: true, z: LAYER_Z[p.kategori] || 3 });
   }
   wornDraw.sort((a, b) => a.z - b.z);
   renderWorn();
@@ -3214,6 +3214,7 @@ const catalog = {
 };
 
 function setProducts(list, source, updatedAt) {
+  if(window.communityProducts) list=[...list.filter(p=>!p.community),...window.communityProducts.values()];
   catalog.products = list; catalog.source = source; catalog.updatedAt = updatedAt || null;
   for (const set of ["brands", "colors", "sizes"]) {
     const valid = new Set(list.flatMap((p) => set === "brands" ? [p.brand] : set === "colors" ? p.colors.map((c) => colorLabel(c.name)) : p.sizes));
@@ -5055,6 +5056,7 @@ requestRender();
   const products = window.visitorProducts = new Map();
   const fits = readStore('bilik.visitor.fits.v1', {});
   const defaults = () => ({x:0,y:0,width:100,height:100,angle:0});
+  const defaultForSelection=()=>({...defaults(),...wornItems().find(({p})=>p.id===selected)?.p.defaultFit});
   let selected = '', db, busy = false;
   const $ = id => document.getElementById(id);
   const box = document.createElement('section');
@@ -5087,20 +5089,20 @@ requestRender();
     const wrap=document.createElement('label');wrap.textContent=label;
     const output=document.createElement('output');output.id='vp-value-'+key;wrap.append(output);
     const input=document.createElement('input');input.type='range';input.id='vp-'+key;input.min=min;input.max=max;input.step=step;input.setAttribute('aria-label',label+' baju');wrap.append(input);$('vp-sliders').append(wrap);
-    input.oninput=()=>{if(!selected)return;const fit=fits[selected]||(fits[selected]=defaults());fit[key]=Number(input.value);output.textContent=input.value+unit;writeStore('bilik.visitor.fits.v1',fits);requestRender();};
+    input.oninput=()=>{if(!selected)return;const fit=fits[selected]||(fits[selected]=defaultForSelection());fit[key]=Number(input.value);output.textContent=input.value+unit;writeStore('bilik.visitor.fits.v1',fits);requestRender();};
   }
   function sync(){
     const items=wornItems().filter(({p})=>p.id!=='__kal'); const sel=$('vp-item');sel.replaceChildren();
     for(const {p} of items){const o=new Option(p.nama,p.id);sel.add(o);}if(!items.some(({p})=>p.id===selected))selected=items[0]?.p.id||'';sel.value=selected;
     $('vp-adjust').hidden=!selected;
-    const f=fits[selected]||defaults();for(const [key,, , , ,unit] of fields){$('vp-'+key).value=f[key];$('vp-value-'+key).textContent=f[key]+unit;}
+    const f=fits[selected]||wornItems().find(({p})=>p.id===selected)?.p.defaultFit||defaults();for(const [key,, , , ,unit] of fields){$('vp-'+key).value=f[key];$('vp-value-'+key).textContent=f[key]+unit;}
   }
   window.openVisitorFit=id=>{selected=id||'';box.hidden=false;sync();};
   launcher.onclick=()=>{window.openVisitorFit();$('vp-add').open=true;};$('vp-close').onclick=()=>{box.hidden=true;};$('vp-item').onchange=()=>{selected=$('vp-item').value;sync();};
   $('vp-reset').onclick=()=>{if(selected){delete fits[selected];writeStore('bilik.visitor.fits.v1',fits);sync();requestRender();}};
   // Semua pass (badan, bayangan, lengan) memakai transformasi yang sama.
   window.visitorFitMesh=(d,pos)=>{
-    const f=fits[d.productId];if(!f)return pos;
+    const f=fits[d.productId]||d.defaultFit;if(!f)return pos;
     const L=bodyLandmarks(), pivotY=d.z===1 ? L.waistY*.55+L.lowWaistY*.45 : (L.shL[1]+L.shR[1])/2;
     const cx=L.at(pivotY).C, a=-f.angle*Math.PI/180,c=Math.cos(a),s=Math.sin(a),out=new Float32Array(pos.length);
     for(let i=0;i<pos.length;i+=2){const x=(pos[i]-cx)*f.width/100,y=(pos[i+1]-pivotY)*(d.simple?f.width:f.height)/100;out[i]=cx+x*c-y*s+f.x;out[i+1]=pivotY+x*s+y*c+f.y;}return out;
@@ -5110,7 +5112,7 @@ requestRender();
     const row=document.createElement('div'),name=document.createElement('span'),wear=document.createElement('button'),del=document.createElement('button');name.textContent=p.nama;wear.textContent='Coba';del.textContent='Hapus';wear.type=del.type='button';
     wear.onclick=()=>{if(!isWorn(p))wearProduct(p,'BEBAS','');window.openVisitorFit(p.id);};
     del.onclick=async()=>{try{if(db)await save('delete',p.id);products.delete(p.id);if(isWorn(p)){state.outfit[p.kategori]=null;writeStore('mixmatch.outfit.v1',state.outfit);}delete fits[p.id];writeStore('bilik.visitor.fits.v1',fits);garmentsDirty=true;renderWorn();requestRender();library();sync();}catch{$('vp-status').textContent='Belum bisa menghapus baju. Coba lagi.';}};
-    row.append(name,wear,del);el.append(row);
+    row.dataset.productId=p.id;row.append(name,wear,del);el.append(row);
   }if(!products.size)el.textContent='Belum ada baju tambahan.';}
   function save(op,value){return new Promise((resolve,reject)=>{const tx=db.transaction('products','readwrite');tx.objectStore('products')[op](value);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
   async function photo(file,remove){
@@ -5192,7 +5194,7 @@ requestRender();
       const offsets={};for(const k of Object.keys(points)){if(/^pin[A-Z]d$/.test(k)){offsets[k.slice(0,-1)]=points[k];delete points[k];}}
       if(!Object.keys(points).length)throw Error('Baju belum terlihat di foto. Coba foto lain.');
       const draft={...item.p,id:'visitor-edit-'+crypto.randomUUID(),colors:[],fotoProduk:photoCanvas.toDataURL('image/png'),fotoKatalog:photoCanvas.toDataURL('image/png')};
-      E={photo:photoCanvas,points,offsets,key:Object.keys(points)[0],undo:[],original:item.p,draft,outfit:structuredClone(state.outfit),size:item.size};products.set(draft.id,draft);fits[draft.id]={...(fits[item.p.id]||defaults()),keepShape:window.visitorKeepShape(item.p)};
+      E={photo:photoCanvas,points,offsets,key:Object.keys(points)[0],undo:[],original:item.p,draft,outfit:structuredClone(state.outfit),size:item.size};products.set(draft.id,draft);fits[draft.id]={...(fits[item.p.id]||item.p.defaultFit||defaults()),keepShape:window.visitorKeepShape(item.p)};
       state.outfit={...state.outfit,[draft.kategori]:{id:draft.id,size:item.size,color:''}};selected=draft.id;
       $('vp-add').hidden=true;$('vp-adjust').hidden=true;editor.hidden=false;$('ve-tool').value='points';$('ve-follow-body').checked=!window.visitorKeepShape(draft);pointList();paint();preview();$('vp-status').textContent='Edit ini hanya untuk kamu. Katalog asli tetap ada.';
     }catch(err){$('vp-status').textContent='Foto belum bisa diedit. Coba unggah foto bajunya sendiri. '+(err.message||'');}finally{editButton.disabled=false;}
@@ -5241,9 +5243,9 @@ requestRender();
   const advanced=document.createElement('details');advanced.id='vp-advanced';advanced.innerHTML='<summary>Pengaturan lanjutan</summary>';$('vp-sliders').before(advanced);advanced.append($('vp-sliders'));advanced.append($('vp-reset'));advanced.append(editButton);
   editButton.textContent='Edit latar, hapus bagian & titik';
   style.textContent+=`.vp-easy-row{display:flex;gap:8px;margin:10px 0}.vp-easy-row button{flex:1;padding:10px 5px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:inherit;font-size:12px}#vp-auto-place{width:100%;padding:10px}#vp-easy p{margin:10px 0}#vp-advanced{margin-top:12px}`;
-  window.visitorKeepShape=p=>fits[p.id]?.keepShape ?? p.id.startsWith('visitor-');
-  function easySync(){const p=wornItems().find(({p})=>p.id===selected)?.p,f=fits[selected]||defaults();$('vp-size').value=f.width;$('vp-size-value').textContent=Math.round(f.width)+'%';$('vp-keep-shape').checked=p ? window.visitorKeepShape(p) : true;$('vp-height').parentElement.hidden=$('vp-keep-shape').checked;$('vp-placement-note').textContent=$('vp-keep-shape').checked?'Bentuk asli dipertahankan. Sesuaikan posisi dan ukurannya; kain belum mengikuti lekuk badan.':'Baju mengikuti tubuh lewat titik. Kalau motif tertarik, aktifkan pertahankan bentuk asli.';}
-  function easyChange(fn){if(!selected)return;const f=fits[selected]||(fits[selected]=defaults());fn(f);writeStore('bilik.visitor.fits.v1',fits);sync();easySync();requestRender();}
+  window.visitorKeepShape=p=>fits[p.id]?.keepShape ?? p.defaultFit?.keepShape ?? (!!p.community || p.id.startsWith('visitor-'));
+  function easySync(){const p=wornItems().find(({p})=>p.id===selected)?.p,f=fits[selected]||p?.defaultFit||defaults();$('vp-size').value=f.width;$('vp-size-value').textContent=Math.round(f.width)+'%';$('vp-keep-shape').checked=p ? window.visitorKeepShape(p) : true;$('vp-height').parentElement.hidden=$('vp-keep-shape').checked;$('vp-placement-note').textContent=$('vp-keep-shape').checked?'Bentuk asli dipertahankan. Sesuaikan posisi dan ukurannya; kain belum mengikuti lekuk badan.':'Baju mengikuti tubuh lewat titik. Kalau motif tertarik, aktifkan pertahankan bentuk asli.';}
+  function easyChange(fn){if(!selected)return;const f=fits[selected]||(fits[selected]=defaultForSelection());fn(f);writeStore('bilik.visitor.fits.v1',fits);sync();easySync();requestRender();}
   $('vp-size').oninput=()=>{const n=Number($('vp-size').value);easyChange(f=>{const ratio=f.height/Math.max(1,f.width);f.width=n;f.height=clamp(n*ratio,50,180);});};
   $('vp-smaller').onclick=()=>easyChange(f=>{f.width=clamp(f.width-5,50,180);f.height=clamp(f.height-5,50,180);});
   $('vp-larger').onclick=()=>easyChange(f=>{f.width=clamp(f.width+5,50,180);f.height=clamp(f.height+5,50,180);});
@@ -5253,9 +5255,43 @@ requestRender();
   const oldOpen=window.openVisitorFit;window.openVisitorFit=id=>{oldOpen(id);easySync();};const oldSelect=$('vp-item').onchange;$('vp-item').onchange=()=>{oldSelect();easySync();};
   const originalSync=sync;sync=()=>{originalSync();easySync();};
   let easyDrag=null;
-  canvas.addEventListener('pointerdown',e=>{if(box.hidden||E||!selected||e.button!==0)return;e.preventDefault();e.stopImmediatePropagation();if(easyDrag)return;const f=fits[selected]||(fits[selected]=defaults());easyDrag={id:e.pointerId,x:e.clientX,y:e.clientY,baseX:f.x,baseY:f.y};canvas.setPointerCapture(e.pointerId);},true);
-  canvas.addEventListener('pointermove',e=>{if(!easyDrag||easyDrag.id!==e.pointerId)return;e.preventDefault();e.stopImmediatePropagation();const f=fits[selected]||(fits[selected]=defaults()),scale=cam.viewH/Math.max(1,canvas.getBoundingClientRect().height);f.x=clamp(easyDrag.baseX+(e.clientX-easyDrag.x)*scale,-25,25);f.y=clamp(easyDrag.baseY-(e.clientY-easyDrag.y)*scale,-30,30);requestRender();},true);
+  canvas.addEventListener('pointerdown',e=>{if(box.hidden||E||!selected||e.button!==0)return;e.preventDefault();e.stopImmediatePropagation();if(easyDrag)return;const f=fits[selected]||(fits[selected]=defaultForSelection());easyDrag={id:e.pointerId,x:e.clientX,y:e.clientY,baseX:f.x,baseY:f.y};canvas.setPointerCapture(e.pointerId);},true);
+  canvas.addEventListener('pointermove',e=>{if(!easyDrag||easyDrag.id!==e.pointerId)return;e.preventDefault();e.stopImmediatePropagation();const f=fits[selected]||(fits[selected]=defaultForSelection()),scale=cam.viewH/Math.max(1,canvas.getBoundingClientRect().height);f.x=clamp(easyDrag.baseX+(e.clientX-easyDrag.x)*scale,-25,25);f.y=clamp(easyDrag.baseY-(e.clientY-easyDrag.y)*scale,-30,30);requestRender();},true);
   const finishMove=e=>{if(!easyDrag||easyDrag.id!==e.pointerId)return;e.preventDefault();e.stopImmediatePropagation();easyDrag=null;writeStore('bilik.visitor.fits.v1',fits);sync();};canvas.addEventListener('pointerup',finishMove,true);canvas.addEventListener('pointercancel',finishMove,true);
+
+  // Katalog bersama: hanya kirim foto ketika pengunjung menekan Publikasikan.
+  const publicItems=window.communityProducts=new Map();
+  const ids=readStore('bilik.community.ids.v1',{});
+  let owner=readStore('bilik.community.owner.v1','');
+  if(!/^[a-f0-9]{64}$/.test(owner)){const bytes=crypto.getRandomValues(new Uint8Array(32));owner=Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('');writeStore('bilik.community.owner.v1',owner);}
+  const communityStatus=document.createElement('p');communityStatus.id='community-status';communityStatus.setAttribute('role','status');launcher.after(communityStatus);
+  const more=document.createElement('button');more.type='button';more.className='link-btn';more.textContent='Muat ulang katalog pengunjung';communityStatus.after(more);
+  async function api(data){if(location.protocol==='file:')throw Error('Publikasi perlu dibuka lewat website Vercel, bukan file lokal.');const response=await fetch('/api/community',{method:'POST',headers:{'Content-Type':'application/json','X-Owner-Token':owner},body:JSON.stringify(data)});const result=await response.json().catch(()=>({}));if(!response.ok)throw Error(result.error||'Publikasi belum tersedia.');return result;}
+  function toProduct(row){return {id:'community-'+row.id,nama:row.product.nama,brand:'Katalog pengunjung',kategori:row.product.kategori,harga:0,sizes:['BEBAS'],chart:{},colors:[],warna:'',fotoProduk:'/api/community?image='+row.id,fotoKatalog:'/api/community?image='+row.id,anchors:row.product.anchors||'',shopee:row.product.shopee,tema:[],community:true,communityId:row.id,owned:row.owned,defaultFit:row.fit};}
+  async function refresh(){if(location.protocol==='file:'){communityStatus.textContent='Katalog bersama aktif setelah website dipasang ke Vercel.';return;}more.disabled=true;
+    try{let offset=0;const rows=[];while(offset!==null&&offset<=200){const response=await fetch('/api/community?offset='+offset,{headers:{'X-Owner-Token':owner},cache:'no-store'});const data=await response.json().catch(()=>({}));if(!response.ok)throw Error(data.error||'Katalog bersama belum aktif.');rows.push(...data.products);offset=data.nextOffset;}
+      publicItems.clear();for(const row of rows){const p=toProduct(row);publicItems.set(p.id,p);}setProducts(catalog.products.filter(p=>!p.community),catalog.source,catalog.updatedAt);communityStatus.textContent=rows.length+' baju dari pengunjung';
+    }catch(err){communityStatus.textContent=err.message;}finally{more.disabled=false;}}
+  more.onclick=refresh;
+  async function publish(p,button){if(E){$('vp-status').textContent='Simpan atau batalkan edit foto dulu sebelum menerbitkan.';return;}button.disabled=true;const status=$('vp-status');status.textContent='Menyiapkan foto untuk katalog publik…';
+    try{const img=await loadImg(imgSrc(p.fotoProduk));let scale=Math.min(1,800/Math.max(img.width,img.height)),image,c;
+      do{c=document.createElement('canvas');c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));c.getContext('2d').drawImage(img,0,0,c.width,c.height);image=c.toDataURL('image/png');if(image.length<=819222)break;scale*=.8;}while(c.width>240&&c.height>240);
+      if(image.length>819222)throw Error('Foto terlalu besar untuk katalog publik. Pilih foto yang lebih sederhana.');
+      const sx=c.width/img.width,sy=c.height/img.height,A=parseAnchors(p.anchors);
+      const anchors=Object.entries(A).map(([k,v])=>k+'='+v.map((n,i)=>Math.round(n*(/^pin[A-Z]d$/.test(k)?1:(i?sy:sx))*10)/10).join(',')).join(';');
+      const signature=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([p.nama,p.kategori,p.shopee,anchors,image,fits[p.id]||p.defaultFit||defaults()])))),b=>b.toString(16).padStart(2,'0')).join('');
+      const previous=ids[p.id],id=previous?.signature===signature?previous.id:crypto.randomUUID();ids[p.id]={id,signature};writeStore('bilik.community.ids.v1',ids);
+      await api({action:'publish',id,product:{nama:p.nama,kategori:p.kategori,shopee:p.shopee,anchors},fit:{...(fits[p.id]||p.defaultFit||defaults()),keepShape:window.visitorKeepShape(p)},image});
+      status.textContent='Sudah terbit! Baju ini sekarang bisa dilihat semua pengunjung.';button.textContent='Sudah diterbitkan';await refresh();
+    }catch(err){status.textContent=err.message;}finally{button.disabled=false;}}
+  const oldLibrary=library;library=()=>{oldLibrary();for(const row of $('vp-library').children){const p=products.get(row.dataset.productId);if(!p||p.id.startsWith('visitor-edit-'))continue;const b=document.createElement('button');b.type='button';b.className='btn-primary';b.textContent='Publikasikan';b.onclick=()=>publish(p,b);row.append(b);}};
+  const publicNote=document.createElement('p');publicNote.textContent='Klik Publikasikan untuk membagikan foto, link, dan pengaturan baju ke semua orang. Langsung terbit tanpa persetujuan pemilik.';$('vp-library').after(publicNote);
+  const originalDetail=openDetail;openDetail=function(id){originalDetail(id);const p=publicItems.get(id);if(!p)return;const actions=document.querySelector('#detail .detail-actions'),msg=document.createElement('p');msg.setAttribute('role','status');actions.after(msg);
+    const report=document.createElement('button');report.type='button';report.className='btn-ghost';report.textContent='Laporkan produk';report.onclick=async()=>{report.disabled=true;try{await api({action:'report',id:p.communityId});msg.textContent='Laporan sudah dikirim ke pemilik website.';}catch(e){msg.textContent=e.message;report.disabled=false;}};actions.append(report);
+    if(p.owned){const del=document.createElement('button');del.type='button';del.className='btn-ghost';del.textContent='Tarik dari katalog publik';del.onclick=async()=>{del.disabled=true;try{await api({action:'delete',id:p.communityId});for(const key of Object.keys(ids))if(ids[key]?.id===p.communityId)delete ids[key];writeStore('bilik.community.ids.v1',ids);if(isWorn(p)){state.outfit[p.kategori]=null;writeStore('mixmatch.outfit.v1',state.outfit);}closeDetail();await refresh();}catch(e){msg.textContent=e.message;del.disabled=false;}};actions.append(del);}
+  };
+  style.textContent+='#community-status{font-size:12px;color:var(--muted);line-height:1.5}#vp-library>div{flex-wrap:wrap}#vp-library>div>span{flex-basis:100%}';
+  library();refresh();
 
   library();
 })();
