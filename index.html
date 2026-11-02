@@ -5063,9 +5063,13 @@ requestRender();
   box.id='visitor-panel'; box.hidden=true; box.setAttribute('aria-label','Coba dan sesuaikan baju');
   box.innerHTML=`<div class="vp-head"><h2>Coba baju sendiri</h2><button type="button" id="vp-close" aria-label="Tutup pengaturan baju">×</button></div>
   <div class="vp-content"><details id="vp-add"><summary>Tambah baju dari Shopee</summary>
-  <p>Tempel link dan unggah foto bajunya. Link tidak mengambil foto otomatis. Pilih foto satu baju tampak depan; PNG tanpa latar memberi hasil terbaik.</p>
+  <p>Tempel link dan unggah foto bajunya. Harga, ukuran, dan warna akan dicoba dibaca dari link. Lengkapi data yang tidak tersedia; foto tetap diunggah sendiri. Pilih foto satu baju tampak depan; PNG tanpa latar memberi hasil terbaik.</p>
   <form id="vp-form"><label>Link Shopee<input id="vp-url" type="url" placeholder="https://shopee.co.id/…" required></label>
-  <label>Nama baju<input id="vp-name" maxlength="100" placeholder="Baju pilihanku" required></label>
+  <button type="button" id="vp-detect" class="btn-ghost">Baca detail dari link</button><p id="vp-detect-status" role="status"></p>
+<label>Harga (Rp)<input id="vp-price" type="number" min="0" step="1" placeholder="Isi harga varian pilihan"></label>
+<label>Ukuran tersedia<input id="vp-sizes" maxlength="200" placeholder="S;M;L;XL"></label>
+<label>Warna tersedia<input id="vp-colors" maxlength="400" placeholder="Hitam;Putih;Biru"></label>
+<label>Nama baju<input id="vp-name" maxlength="100" placeholder="Baju pilihanku" required></label>
   <label>Jenis<select id="vp-category"><option value="atasan">Atasan</option><option value="bawahan">Rok / celana</option><option value="dress">Dress</option><option value="outer">Outer</option></select></label>
   <label>Foto baju<input id="vp-photo" type="file" accept="image/png,image/jpeg,image/webp" required></label>
   <label class="vp-check"><input id="vp-bg" type="checkbox"> Hapus latar putih polos</label>
@@ -5130,11 +5134,28 @@ requestRender();
     if(visible<100)throw Error('Baju tidak terlihat di foto. Coba foto lain atau matikan hapus latar putih.');
     return c.toDataURL('image/png');
   }
+  const splitOptions=value=>[...new Set(value.split(/[;,\n]/).map(v=>v.trim()).filter(Boolean))].slice(0,40);
+  let detectVersion=0,detectTimer;
+  async function detectProduct(){
+    const url=$('vp-url').value.trim(),version=++detectVersion;
+    if(!safeShopee(url)){ $('vp-detect-status').textContent='Tempel link Shopee yang valid.';return; }
+    if(location.protocol==='file:'){ $('vp-detect-status').textContent='Pembacaan link tersedia setelah dipasang di website. Untuk sekarang, isi manual.';return; }
+    const before=Object.fromEntries(['name','price','sizes','colors'].map(k=>[k,$('vp-'+k).value]));
+    $('vp-detect-status').textContent='Membaca detail produk…';
+    try{const response=await fetch('/api/product-info',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url}),signal:AbortSignal.timeout(15000)});const data=await response.json();if(version!==detectVersion||url!==$('vp-url').value.trim())return;if(!response.ok)throw Error(data.error||'Detail belum terbaca. Isi manual.');
+      const values={name:data.name,price:data.price,sizes:(data.sizes||[]).join(';'),colors:(data.colors||[]).join(';')};let count=0;
+      for(const [key,value] of Object.entries(values)){const field=$('vp-'+key);if(value!==null&&value!==undefined&&value!==''&&field.value===before[key]&&!field.value){field.value=String(value);count++;}}
+      $('vp-detect-status').textContent=count?'Detail tersedia sudah diisi. Periksa varian, lalu lengkapi kolom kosong. '+(data.priceNote||''):'Belum ada detail tambahan yang bisa diisi. Lengkapi secara manual.';
+    }catch(e){if(version===detectVersion)$('vp-detect-status').textContent=e.name==='TimeoutError'?'Pembacaan terlalu lama. Isi manual atau coba lagi.':(e instanceof SyntaxError?'Layanan pembacaan belum tersedia. Pasang file api/product-info.js di Vercel atau isi manual.':e.message);}
+  }
+  $('vp-detect').onclick=detectProduct;
+  $('vp-url').addEventListener('input',()=>{++detectVersion;clearTimeout(detectTimer);$('vp-detect-status').textContent='';detectTimer=setTimeout(()=>{if($('vp-url').value.trim())detectProduct();},800);});
+  $('vp-form').addEventListener('reset',()=>{++detectVersion;clearTimeout(detectTimer);$('vp-detect-status').textContent='';});
   $('vp-form').onsubmit=async e=>{e.preventDefault();if(busy)return;busy=true;$('vp-submit').disabled=true;$('vp-status').textContent='Menyiapkan foto…';
     try{const link=safeShopee($('vp-url').value.trim());if(!link)throw Error('Gunakan link HTTPS Shopee Indonesia atau link pendek Shopee.');const name=$('vp-name').value.trim();if(!name)throw Error('Isi nama bajunya dulu.');
-      const image=await photo($('vp-photo').files[0],$('vp-bg').checked),p={id:'visitor-'+crypto.randomUUID(),nama:name,brand:'Baju sendiri',kategori:$('vp-category').value,harga:0,sizes:['BEBAS'],chart:{},colors:[],warna:'',fotoProduk:image,fotoKatalog:image,anchors:'',shopee:link,tema:[]};
+      const image=await photo($('vp-photo').files[0],$('vp-bg').checked),p={id:'visitor-'+crypto.randomUUID(),nama:name,brand:'Baju sendiri',kategori:$('vp-category').value,harga:Number($('vp-price').value)||0,sizes:splitOptions($('vp-sizes').value).length?splitOptions($('vp-sizes').value):['BEBAS'],chart:{},colors:splitOptions($('vp-colors').value),warna:splitOptions($('vp-colors').value).join(';'),fotoProduk:image,fotoKatalog:image,anchors:'',shopee:link,tema:[]};
       let stored=false;if(db){try{await save('put',p);stored=true;}catch{}}
-      products.set(p.id,p);wearProduct(p,'BEBAS','');selected=p.id;library();sync();$('vp-add').open=false;$('vp-status').textContent=stored?'Baju ditambahkan. Atur posisi dan ukurannya di bawah.':'Baju siap dicoba. Penyimpanan browser tidak tersedia; baju ini hilang saat halaman ditutup.';$('vp-form').reset();
+      products.set(p.id,p);wearProduct(p,p.sizes[0],p.colors[0]||'');selected=p.id;library();sync();$('vp-add').open=false;$('vp-status').textContent=stored?'Baju ditambahkan. Atur posisi dan ukurannya di bawah.':'Baju siap dicoba. Penyimpanan browser tidak tersedia; baju ini hilang saat halaman ditutup.';$('vp-form').reset();
     }catch(err){$('vp-status').textContent=err.message||'Foto belum bisa diproses. Coba foto lain.';}finally{busy=false;$('vp-submit').disabled=false;}
   };
   try{const req=indexedDB.open('bilik-visitor-v1',1);req.onupgradeneeded=()=>req.result.createObjectStore('products',{keyPath:'id'});req.onsuccess=()=>{db=req.result;const r=db.transaction('products').objectStore('products').getAll();r.onsuccess=()=>{for(const p of r.result)products.set(p.id,p);library();garmentsDirty=true;renderWorn();requestRender();};};req.onerror=()=>{$('vp-status').textContent='Penyimpanan tidak tersedia; baju tambahan hanya berlaku selama halaman ini terbuka.';};}catch{}
